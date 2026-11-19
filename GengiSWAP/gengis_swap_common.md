@@ -4,8 +4,8 @@ Fuente única de definiciones transversales para **Preparador** (`gengis_swap_pr
 
 ## Rutas del Framework
 Todas las rutas internas del sistema usan `<RAIZ_GENGISWAP>` con rutas relativas a dicha raíz.
-- **Valor actual de `<RAIZ_GENGISWAP>`:** `C:\Desarrollo\Proyecto Tungsteno\GengiSWAP\`
-- **Repositorio oficial (GitHub):** `https://github.com/blackpusch/Proyecto_Tungsteno` (raíz local: `C:\Desarrollo\Proyecto Tungsteno\`; aloja el núcleo versionable de GengiSWAP y el equipo `gengis`).
+- **Valor actual de `<RAIZ_GENGISWAP>`:** `C:\Black Factory\GengiSWAP\`
+- **Repositorio oficial (GitHub):** `https://github.com/blackpusch/Black_Factory` (raíz local: `C:\Black Factory\`; aloja Black Factory y el motor/protocolos de GengiSWAP (`gengis`)).
 - **Ubicación operativa vigente de tareas (`<DIR_TAREA>`):** `C:\Desarrollo\GengiSWAP_data\gengis_task\<ID>\` (separada de `<RAIZ_GENGISWAP>`; el fallback por `<TAREA_ID>` sigue buscando `<RAIZ_GENGISWAP>gengis_task\<ID>\`). Al pasar una ruta directa de tarea al CLI, usar `--root "<RAIZ_GENGISWAP>"` o definir `GENGIS_ROOT` para mantener un único `gengis_global_log.md`.
 
 ## Rol `[AUTOR]` (Auditor)

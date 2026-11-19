@@ -18,3 +18,10 @@ __pycache__/
 *.tmp
 Thumbs.db
 .DS_Store
+
+# 0_Brain: bóveda privada de procesos/proyectos e índices locales (Opción i: untracked por defecto)
+0_Brain/vault/
+0_Brain/brain.exe
+*.db
+*.db-wal
+*.db-shm
