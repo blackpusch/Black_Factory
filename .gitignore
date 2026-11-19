@@ -1,0 +1,20 @@
+# Binarios compilados (reproducibles vía `go build -o ../gengis.exe ./cmd/gengis`)
+GengiSWAP/gengis.exe
+*.exe
+
+# Bitácora operativa local
+GengiSWAP/gengis_global_log.md
+
+# Resguardo por si quedan datos operativos o respaldos locales dentro del repo
+# (su ubicación externa vigente es C:\Desarrollo\GengiSWAP_data\)
+GengiSWAP/gengis_task/
+Bodega de datos/
+.ring/
+
+# Artefactos temporales / caché / sistema
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
