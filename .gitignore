@@ -25,3 +25,7 @@ Thumbs.db
 *.db
 *.db-wal
 *.db-shm
+
+# Borradores y reportes temporales de EGM (antes de aprobar en Docs/designs/)
+.dev/docs/
+*_DRIFT_REPORT.md
