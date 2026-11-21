@@ -370,8 +370,12 @@ func matchFilesAgainstCovers(covers, normFiles []string) []string {
 	return matched
 }
 
-func isTransversalType(docType string) bool {
+func IsTransversalType(docType string) bool {
 	return strings.EqualFold(docType, "constitution") || strings.EqualFold(docType, "risk_zones")
+}
+
+func isTransversalType(docType string) bool {
+	return IsTransversalType(docType)
 }
 
 func transversalAppliesToProject(docProject, targetProject string) bool {
