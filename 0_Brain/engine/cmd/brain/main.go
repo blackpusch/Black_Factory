@@ -548,6 +548,9 @@ func resolveVaultPath(vaultFlag string) string {
 	if fi, err := os.Stat(defaultRel); err == nil && fi.IsDir() {
 		return defaultRel
 	}
+	if fi, err := os.Stat("vault"); err == nil && fi.IsDir() {
+		return "vault"
+	}
 	if exe, err := os.Executable(); err == nil {
 		cand := filepath.Join(filepath.Dir(exe), "vault")
 		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {

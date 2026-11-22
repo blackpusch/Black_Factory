@@ -55,6 +55,22 @@ func TestParseRiskZonesCatalog_TableAndFailSafe(t *testing.T) {
 	if _, err := ParseRiskZonesCatalog(badLevelMD); err == nil {
 		t.Fatalf("esperaba error ante nivel de riesgo desconocido")
 	}
+
+	// Major QA #2a: tabla con fila truncada (< 5 columnas o sin '|' final) dentro del catalogo DEBE retornar error explicito
+	truncatedRowMD := customMD + "| `RZ-013` | `black-factory` | `GengiSWAP/engine/` |\n"
+	if _, err := ParseRiskZonesCatalog(truncatedRowMD); err == nil {
+		t.Fatalf("ParseRiskZonesCatalog debia fallar ante fila truncada con < 5 columnas")
+	}
+	missingPipeMD := customMD + "| `RZ-014` | `black-factory` | `GengiSWAP/engine/` | `CRITICO` | PR + AUTOR\n"
+	if _, err := ParseRiskZonesCatalog(missingPipeMD); err == nil {
+		t.Fatalf("ParseRiskZonesCatalog debia fallar ante fila de tabla sin '|' de cierre")
+	}
+
+	// Major QA #2b: tabla '| ID | Proyecto |' fuera de la seccion '## Catálogo de Zonas de Riesgo' no debe aceptarse
+	outsideSectionMD := "# Otro Documento\n## Otra Seccion\n| ID | Proyecto | Rutas cubiertas | Nivel | Compuerta |\n| :--- | :--- | :--- | :--- | :--- |\n| `RZ-001` | `black-factory` | `GengiSWAP/` | `CRITICO` | PR |\n"
+	if _, err := ParseRiskZonesCatalog(outsideSectionMD); err == nil {
+		t.Fatalf("ParseRiskZonesCatalog no debia aceptar tabla fuera de la seccion de zonas de riesgo")
+	}
 }
 
 func TestContextForFiles_StructuredRiskHitsAndCaseInsensitiveWindowsPaths(t *testing.T) {
@@ -121,6 +137,21 @@ func TestContextForFiles_StructuredRiskHitsAndCaseInsensitiveWindowsPaths(t *tes
 		t.Fatalf("esperaba match case-insensitive en brain-engine-g4 (%v) y RZ-002 (%v): %+v", foundWiki, foundRZ2, ctxRes2)
 	}
 
+	// Major QA #4: ContextForFiles con --project distinto (ej. "gengiswap") debe incluir risk_hits transversales de "black-factory"
+	ctxSubProj, err := ContextForFiles(stats.DBPath, "gengiswap", []string{`GengiSWAP/engine/ring.go`})
+	if err != nil {
+		t.Fatalf("ContextForFiles gengiswap error: %v", err)
+	}
+	foundTransversalRZ := false
+	for _, r := range ctxSubProj {
+		if r.Type == "risk_zones" && len(r.RiskHits) == 1 && r.RiskHits[0].ID == "RZ-001" {
+			foundTransversalRZ = true
+		}
+	}
+	if !foundTransversalRZ {
+		t.Fatalf("ContextForFiles(--project gengiswap) debia reportar RZ-001 transversal de black-factory: %+v", ctxSubProj)
+	}
+
 	// Caso 3: risk_zones.md con tabla malformada debe poblar RiskZonesParseError sin abortar la consulta
 	writeTestFile(t, root, "wiki/risk_zones.md", indexTestDoc("brain-risk-zones", "Zonas Corruptas", "risk_zones", "black-factory", "active", nil, nil, "Tabla rota sin columnas."))
 	if _, err := BuildIndex(root); err != nil {
@@ -178,8 +209,8 @@ func TestSearchAndContext_NonNullJSONSlices_FTSBooleanKeywords_AndUTF8Snippet(t 
 		t.Fatalf("ContextForFiles sin resultados devolvio slice nil")
 	}
 
-	// 2. Consulta con operadores booleanos FTS5 aislados ("NOT", "AND", "OR") no debe fallar con error de sintaxis FTS5
-	for _, kw := range []string{"NOT", "AND", "OR", "NOT AND OR"} {
+	// 2. Consulta con operadores booleanos FTS5 aislados ("NOT", "AND", "OR", "NEAR") no debe fallar con error de sintaxis FTS5
+	for _, kw := range []string{"NOT", "AND", "OR", "NEAR", "NOT AND OR NEAR"} {
 		res, kwErr := Search(stats.DBPath, QueryOptions{Query: kw})
 		if kwErr != nil {
 			t.Fatalf("Search(%q) fallo con error FTS5: %v", kw, kwErr)
@@ -187,6 +218,17 @@ func TestSearchAndContext_NonNullJSONSlices_FTSBooleanKeywords_AndUTF8Snippet(t 
 		if res == nil {
 			t.Fatalf("Search(%q) devolvio slice nil", kw)
 		}
+	}
+	if q := buildFTS5Query("NEAR", false); q != `"NEAR"` {
+		t.Fatalf("buildFTS5Query(\"NEAR\", false) = %q, esperaba \"\\\"NEAR\\\"\"", q)
+	}
+
+	// 3. Major QA #3: AcquireVaultLock sobre directorio inexistente NO debe envolver el error en ErrVaultLocked
+	missingVaultDir := filepath.Join(t.TempDir(), "boveda_inexistente")
+	if _, lockErr := AcquireVaultLock(missingVaultDir); lockErr == nil {
+		t.Fatalf("AcquireVaultLock sobre directorio inexistente debia fallar")
+	} else if strings.Contains(lockErr.Error(), ErrVaultLocked.Error()) {
+		t.Fatalf("AcquireVaultLock sobre directorio inexistente no debe envolver en ErrVaultLocked: %v", lockErr)
 	}
 
 	// 3. Verificacion de cleanSnippet con runas UTF-8 validas

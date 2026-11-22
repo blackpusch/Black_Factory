@@ -4,7 +4,6 @@ package brain
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 
 	"blackfactory/pkg/bfcore"
@@ -21,6 +20,8 @@ type FileLock struct {
 }
 
 // AcquireVaultLock adquiere el cerrojo de kernel exclusivo via flock.
+// Si otro proceso tiene el lock (bfcore.ErrLockBusy), devuelve ErrVaultLocked.
+// Otros errores de E/S o permisos del SO se retornan directamente sin envolver en ErrVaultLocked.
 func AcquireVaultLock(vaultRoot string) (*FileLock, error) {
 	lockPath := filepath.Join(vaultRoot, ".brain.lock")
 	fl, err := bfcore.AcquireFileLock(lockPath, 0)
@@ -28,7 +29,7 @@ func AcquireVaultLock(vaultRoot string) (*FileLock, error) {
 		if errors.Is(err, bfcore.ErrLockBusy) {
 			return nil, ErrVaultLocked
 		}
-		return nil, fmt.Errorf("%w: %v", ErrVaultLocked, err)
+		return nil, err
 	}
 	return &FileLock{inner: fl}, nil
 }

@@ -116,6 +116,42 @@ func TestRedactTier2Text_FixedPointAndDelimiters(t *testing.T) {
 	if MatchesPersonalPathG4(`0_Brain/engine/validator.go`) {
 		t.Fatalf("MatchesPersonalPathG4 dio falso positivo en ruta relativa del repo")
 	}
+
+	// 1. Blocker QA: 25 ocurrencias de unix_user_path (> 16 pasadas) en un mismo texto deben quedar 100% redactadas
+	var manyUnix strings.Builder
+	for i := 1; i <= 25; i++ {
+		manyUnix.WriteString("/home/" + "dev/file.go ")
+	}
+	redMany, countsMany := RedactTier2Text("description", manyUnix.String())
+	if findings := ScanG4All(redMany); len(findings) != 0 {
+		t.Fatalf("RedactTier2Text dejo hallazgos G4 con 25 rutas unix_user_path: %+v\ntexto: %s", findings, redMany)
+	}
+	if strings.Contains(redMany, "/home/dev") {
+		t.Fatalf("RedactTier2Text filtro rutas unix_user_path mas alla de la 16: %s", redMany)
+	}
+	found25 := false
+	for _, c := range countsMany {
+		if c.Rule == "unix_user_path" && c.Count == 25 {
+			found25 = true
+		}
+	}
+	if !found25 {
+		t.Fatalf("esperaba Count=25 para unix_user_path, obtuvo: %+v", countsMany)
+	}
+
+	// 2. Blocker QA: RedactAllG4 debe aplicar reglas Tier 1 antes que Tier 2 para que "Bearer C:\Users\alice\secret_tok"
+	// o "Bearer secret_tok_12345" con una ruta win_user_path previa redacten ambos sin romper ni filtrar nada.
+	bearerWithWinPath := "Authorization: Bearer " + `C:\` + `Users\alice\secret_tok_12345 y Bearer secret_tok_987654321`
+	cleanBearer := RedactAllG4(bearerWithWinPath)
+	if findings := ScanG4All(cleanBearer); len(findings) != 0 {
+		t.Fatalf("RedactAllG4 sobre Bearer con win_user_path dejo hallazgos G4: %+v en %q", findings, cleanBearer)
+	}
+	if strings.Contains(cleanBearer, "alice") || strings.Contains(cleanBearer, "secret_tok_987654321") {
+		t.Fatalf("RedactAllG4 filtro datos en Bearer+win_user_path: %q", cleanBearer)
+	}
+	if !strings.Contains(cleanBearer, "[REDACTED:G4:bearer_token]") || !strings.Contains(cleanBearer, "[REDACTED:G4:win_user_path]") {
+		t.Fatalf("RedactAllG4 debia aplicar bearer_token (Tier 1) y win_user_path (Tier 2), obtuvo: %q", cleanBearer)
+	}
 }
 
 func TestNormalizeAndMatchCoverPaths_CaseAndFold(t *testing.T) {
@@ -189,6 +225,14 @@ func TestAcquireFileLock_ContentionAndRetry(t *testing.T) {
 
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("el archivo de lock debe persistir en disco tras Unlock: %v", err)
+	}
+
+	// Major QA #3: error del SO al abrir ruta en directorio inexistente NO debe envolverse como ErrLockBusy
+	badLockPath := filepath.Join(dir, "no_existe_subdir", ".test.lock")
+	if _, err := AcquireFileLock(badLockPath, 100*time.Millisecond); err == nil {
+		t.Fatalf("AcquireFileLock sobre directorio inexistente debia fallar")
+	} else if errors.Is(err, ErrLockBusy) {
+		t.Fatalf("error de directorio inexistente no debe envolverse en ErrLockBusy: %v", err)
 	}
 }
 

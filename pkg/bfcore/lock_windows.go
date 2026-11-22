@@ -21,7 +21,8 @@ type FileLock struct {
 }
 
 // AcquireFileLock adquiere un cerrojo exclusivo sobre lockPath usando LockFileEx,
-// reintentando cada 25ms hasta maxWait antes de retornar ErrLockBusy.
+// reintentando cada 25ms hasta maxWait unicamente ante ERROR_LOCK_VIOLATION antes de retornar ErrLockBusy.
+// Otros errores del SO (permisos, ruta invalida) se devuelven de inmediato sin envolver en ErrLockBusy.
 func AcquireFileLock(lockPath string, maxWait time.Duration) (*FileLock, error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -39,12 +40,13 @@ func AcquireFileLock(lockPath string, maxWait time.Duration) (*FileLock, error) 
 		if err == nil {
 			return &FileLock{f: f}, nil
 		}
+		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			_ = f.Close()
+			return nil, fmt.Errorf("bloqueando archivo de lock %s: %w", lockPath, err)
+		}
 		if maxWait <= 0 || time.Now().After(deadline) {
 			_ = f.Close()
-			if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-				return nil, ErrLockBusy
-			}
-			return nil, fmt.Errorf("%w: %v", ErrLockBusy, err)
+			return nil, ErrLockBusy
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

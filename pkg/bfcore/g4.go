@@ -167,8 +167,9 @@ func ScanTier1(field, text string, strictG4 bool) []G4Finding {
 
 // RedactTier2Text ejecuta un bucle de punto fijo (hasta 16 pasadas hasta que queden 0 coincidencias Tier 2)
 // sobre cadenas de texto libre, reemplazando win_user_path y email_address con [REDACTED:G4:<rule>] y
-// reemplazando el nucleo (?:/home|/Users)/<user> de unix_user_path preservando los delimitadores
-// iniciales y finales para que rutas adyacentes (/home/alice /home/bob) queden ambas redactadas.
+// reemplazando todas las ocurrencias no solapadas del nucleo (?:/home|/Users)/<user> de unix_user_path en cada pasada
+// preservando los delimitadores iniciales y finales para que tanto rutas adyacentes (/home/alice /home/bob)
+// como decenas de rutas en un mismo texto queden 100% redactadas.
 func RedactTier2Text(field, text string) (string, []G4Redaction) {
 	if text == "" {
 		return "", nil
@@ -188,9 +189,18 @@ func RedactTier2Text(field, text string) (string, []G4Redaction) {
 			changed = true
 		}
 
-		if loc := reUnixUserSubgroup.FindStringSubmatchIndex(cur); loc != nil {
-			cur = cur[:loc[4]] + "[REDACTED:G4:unix_user_path]" + cur[loc[5]:]
-			unixCount++
+		if subMatches := reUnixUserSubgroup.FindAllStringSubmatchIndex(cur, -1); len(subMatches) > 0 {
+			var sb strings.Builder
+			sb.Grow(len(cur) + len(subMatches)*16)
+			last := 0
+			for _, loc := range subMatches {
+				sb.WriteString(cur[last:loc[4]])
+				sb.WriteString("[REDACTED:G4:unix_user_path]")
+				last = loc[5]
+			}
+			sb.WriteString(cur[last:])
+			cur = sb.String()
+			unixCount += len(subMatches)
 			changed = true
 		}
 
@@ -218,13 +228,13 @@ func RedactTier2Text(field, text string) (string, []G4Redaction) {
 	return cur, redactions
 }
 
-// RedactAllG4 redacta cualquier coincidencia Tier 1 o Tier 2 a [REDACTED:G4:<rule>]
+// RedactAllG4 redacta cualquier coincidencia Tier 1 (primero) y luego Tier 2 a [REDACTED:G4:<rule>]
 // para sanitizar metadatos forenses (source, source_ref en REJECTED_G4).
 func RedactAllG4(text string) string {
 	if text == "" {
 		return ""
 	}
-	cur, _ := RedactTier2Text("", text)
+	cur := text
 	for pass := 0; pass < 16; pass++ {
 		changed := false
 		for _, rule := range g4Rules {
@@ -240,6 +250,7 @@ func RedactAllG4(text string) string {
 			break
 		}
 	}
+	cur, _ = RedactTier2Text("", cur)
 	return cur
 }
 

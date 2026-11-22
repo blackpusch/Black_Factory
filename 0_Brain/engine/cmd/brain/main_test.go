@@ -397,5 +397,24 @@ func TestResolveVaultPath_PriorityAndFallback(t *testing.T) {
 	if def == "" || !strings.HasSuffix(filepath.ToSlash(def), "vault") {
 		t.Fatalf("resolveVaultPath default inesperado: %q", def)
 	}
+
+	// Nit QA #5: fallback a "vault" en CWD cuando ./vault existe en el directorio actual
+	origWD, err := os.Getwd()
+	if err == nil {
+		baseTmp := t.TempDir()
+		workDir := filepath.Join(baseTmp, "work")
+		if err := os.MkdirAll(filepath.Join(workDir, "vault"), 0o755); err == nil {
+			if err := os.Chdir(workDir); err == nil {
+				gotCWD := resolveVaultPath("")
+				// En Windows hay que salir de workDir hacia baseTmp o origWD antes de que t.TempDir() limpie baseTmp
+				if chErr := os.Chdir(origWD); chErr != nil {
+					_ = os.Chdir(os.TempDir())
+				}
+				if gotCWD != "vault" {
+					t.Fatalf("resolveVaultPath en CWD con ./vault = %q, esperaba \"vault\"", gotCWD)
+				}
+			}
+		}
+	}
 }
 

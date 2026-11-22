@@ -181,7 +181,8 @@ func ContextForFiles(dbPath string, project string, files []string) ([]SearchRes
 
 // ParseRiskZonesCatalog parsea la tabla de 6 columnas bajo "## Catálogo de Zonas de Riesgo"
 // en wiki/risk_zones.md, tolerando backticks en los encabezados y en cada celda,
-// separando multiples patrones por ',' y ';', y normalizando CRÍTICO -> CRITICO.
+// separando multiples patrones por ',' y ';', normalizando CRÍTICO -> CRITICO,
+// y retornando error explicito si una fila dentro de la tabla esta truncada o malformada.
 func ParseRiskZonesCatalog(markdown string) ([]RiskZoneEntry, error) {
 	lines := strings.Split(normalizeMarkdownContent(markdown), "\n")
 	inSection := false
@@ -191,6 +192,9 @@ func ParseRiskZonesCatalog(markdown string) ([]RiskZoneEntry, error) {
 	for _, rawLine := range lines {
 		trimmed := strings.TrimSpace(rawLine)
 		if strings.HasPrefix(trimmed, "## ") {
+			if inSection && headerFound {
+				break
+			}
 			headingLower := strings.ToLower(trimmed)
 			if strings.Contains(headingLower, "zonas de riesgo") ||
 				strings.Contains(headingLower, "catalogo de zonas") ||
@@ -198,17 +202,33 @@ func ParseRiskZonesCatalog(markdown string) ([]RiskZoneEntry, error) {
 				inSection = true
 				continue
 			}
-			if inSection && headerFound {
-				break
-			}
+			inSection = false
+			continue
 		}
 
-		if !strings.HasPrefix(trimmed, "|") || !strings.HasSuffix(trimmed, "|") {
+		if !inSection {
+			continue
+		}
+
+		if !strings.HasPrefix(trimmed, "|") {
+			if headerFound && len(entries) > 0 && trimmed != "" {
+				break
+			}
+			continue
+		}
+
+		if !strings.HasSuffix(trimmed, "|") {
+			if headerFound {
+				return nil, fmt.Errorf("fila de tabla de zonas de riesgo truncada (sin '|' final): %q", trimmed)
+			}
 			continue
 		}
 
 		cells := splitMarkdownTableRow(trimmed)
 		if len(cells) < 5 {
+			if headerFound {
+				return nil, fmt.Errorf("fila de tabla de zonas de riesgo con %d columnas (minimo 5): %q", len(cells), trimmed)
+			}
 			continue
 		}
 
@@ -218,12 +238,10 @@ func ParseRiskZonesCatalog(markdown string) ([]RiskZoneEntry, error) {
 
 		c0 := strings.ToLower(stripCellBackticks(cells[0]))
 		c1 := strings.ToLower(stripCellBackticks(cells[1]))
-		if c0 == "id" && strings.Contains(c1, "proyecto") {
-			headerFound = true
-			inSection = true
-			continue
-		}
 		if !headerFound {
+			if c0 == "id" && strings.Contains(c1, "proyecto") {
+				headerFound = true
+			}
 			continue
 		}
 
@@ -335,7 +353,7 @@ func evaluateRiskZoneEntries(entries []RiskZoneEntry, targetProject string, norm
 
 	for _, entry := range entries {
 		ep := strings.TrimSpace(entry.Project)
-		if tp != "" && ep != "" && ep != "*" && !strings.EqualFold(ep, tp) {
+		if tp != "" && ep != "" && ep != "*" && !strings.EqualFold(ep, "black-factory") && !strings.EqualFold(ep, tp) {
 			continue
 		}
 		matched := matchFilesAgainstCovers(entry.CoversPaths, normFiles)
@@ -686,13 +704,13 @@ func buildFTS5Query(raw string, quoteAll bool) string {
 
 		if strings.HasSuffix(tok, "*") && len(tok) > 1 {
 			prefix := tok[:len(tok)-1]
-			if isSimpleFTSToken(prefix) && !isFTSBooleanOp(prefix) {
+			if isSimpleFTSToken(prefix) && !isFTSReservedKeyword(prefix) {
 				parts = append(parts, prefix+"*")
 				continue
 			}
 		}
 
-		if isSimpleFTSToken(tok) && !isFTSBooleanOp(tok) {
+		if isSimpleFTSToken(tok) && !isFTSReservedKeyword(tok) {
 			parts = append(parts, tok)
 			continue
 		}
@@ -746,6 +764,10 @@ func splitQueryTokens(raw string) []string {
 
 func isFTSBooleanOp(tok string) bool {
 	return tok == "AND" || tok == "OR" || tok == "NOT"
+}
+
+func isFTSReservedKeyword(tok string) bool {
+	return isFTSBooleanOp(tok) || tok == "NEAR"
 }
 
 func isSimpleFTSToken(tok string) bool {
