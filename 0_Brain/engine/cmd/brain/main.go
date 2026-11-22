@@ -544,7 +544,17 @@ func resolveVaultPath(vaultFlag string) string {
 	if env := strings.TrimSpace(os.Getenv("BRAIN_VAULT")); env != "" {
 		return env
 	}
-	return filepath.Join("0_Brain", "vault")
+	defaultRel := filepath.Join("0_Brain", "vault")
+	if fi, err := os.Stat(defaultRel); err == nil && fi.IsDir() {
+		return defaultRel
+	}
+	if exe, err := os.Executable(); err == nil {
+		cand := filepath.Join(filepath.Dir(exe), "vault")
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			return cand
+		}
+	}
+	return defaultRel
 }
 
 func resolveDBPath(vaultRoot, dbFlag string) string {

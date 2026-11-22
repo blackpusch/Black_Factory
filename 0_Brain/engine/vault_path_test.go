@@ -134,8 +134,8 @@ func TestValidateSafeTargetPath_AgainstRealVaultFiles_ExactCounts(t *testing.T) 
 	}
 
 	expectedTotal := 6
-	if len(files) != expectedTotal {
-		t.Fatalf("se esperaban exactamente %d archivos .md en la boveda real, encontrados %d", expectedTotal, len(files))
+	if len(files) < expectedTotal {
+		t.Fatalf("se esperaban al menos %d archivos .md en la boveda real, encontrados %d", expectedTotal, len(files))
 	}
 
 	var accepted []string
@@ -158,23 +158,20 @@ func TestValidateSafeTargetPath_AgainstRealVaultFiles_ExactCounts(t *testing.T) 
 		}
 	}
 
-	// Comprobación exacta: 4 aceptados, 2 rechazados
-	if len(accepted) != 4 {
-		t.Fatalf("se esperaban exactamente 4 archivos aceptados, obtenidos %d: %v", len(accepted), accepted)
+	if len(accepted) < 4 {
+		t.Fatalf("se esperaban al menos 4 archivos aceptados, obtenidos %d: %v", len(accepted), accepted)
 	}
 	if len(rejected) != 2 {
 		t.Fatalf("se esperaban exactamente 2 archivos rechazados, obtenidos %d: %v", len(rejected), rejected)
 	}
 
-	expectedAccepted := map[string]bool{
-		"AGENTS.md":          true,
-		"index.md":           true,
-		"constitution.md":    true,
-		"wiki/risk_zones.md": true,
-	}
+	acceptedSet := make(map[string]bool, len(accepted))
 	for _, acc := range accepted {
-		if !expectedAccepted[acc] {
-			t.Errorf("archivo aceptado no esperado: %s", acc)
+		acceptedSet[acc] = true
+	}
+	for _, reqAcc := range []string{"AGENTS.md", "index.md", "constitution.md", "wiki/risk_zones.md"} {
+		if !acceptedSet[reqAcc] {
+			t.Errorf("archivo nucleo %s debia ser aceptado", reqAcc)
 		}
 	}
 

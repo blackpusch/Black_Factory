@@ -382,3 +382,20 @@ func TestCLI_ApplyRejectsRiskZonesWithoutAutorAndG4Violations(t *testing.T) {
 		t.Fatalf("wiki/incompleto.md no debia crearse tras rechazo de esquema")
 	}
 }
+
+func TestResolveVaultPath_PriorityAndFallback(t *testing.T) {
+	t.Setenv("BRAIN_VAULT", "")
+	if got := resolveVaultPath("custom/vault"); got != "custom/vault" {
+		t.Fatalf("resolveVaultPath con flag explicito = %q, esperaba custom/vault", got)
+	}
+	t.Setenv("BRAIN_VAULT", "env/vault")
+	if got := resolveVaultPath(""); got != "env/vault" {
+		t.Fatalf("resolveVaultPath con BRAIN_VAULT = %q, esperaba env/vault", got)
+	}
+	t.Setenv("BRAIN_VAULT", "")
+	def := resolveVaultPath("")
+	if def == "" || !strings.HasSuffix(filepath.ToSlash(def), "vault") {
+		t.Fatalf("resolveVaultPath default inesperado: %q", def)
+	}
+}
+

@@ -2,12 +2,13 @@
 
 package brain
 
-import "os"
+import (
+	"os"
 
-// isReparseOrSymlink comprueba si un os.FileInfo corresponde a un enlace simbolico.
+	"blackfactory/pkg/bfcore"
+)
+
+// isReparseOrSymlink delega en bfcore.IsReparseOrSymlink.
 func isReparseOrSymlink(fi os.FileInfo) bool {
-	if fi == nil {
-		return false
-	}
-	return fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
+	return bfcore.IsReparseOrSymlink(fi)
 }

@@ -5,9 +5,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"blackfactory/pkg/bfcore"
 )
 
 // IssueCode identifica la categoria de un hallazgo de validacion en la boveda.
@@ -38,70 +39,6 @@ type ValidationReport struct {
 	FilesChecked int               `json:"files_checked"`
 	DocsParsed   int               `json:"docs_parsed"`
 	Issues       []ValidationIssue `json:"issues"`
-}
-
-type g4Rule struct {
-	name    string
-	re      *regexp.Regexp
-	message string
-}
-
-var g4Rules = []g4Rule{
-	{
-		name:    "pem_private_key",
-		re:      regexp.MustCompile(`(?i)-----BEGIN(?:\s+[A-Z0-9]+)*\s+PRIVATE\s+KEY-----`),
-		message: "bloque de clave privada PEM detectado (G4)",
-	},
-	{
-		name:    "literal_private_key",
-		re:      regexp.MustCompile(`(?i)\bPRIVATE\s+KEY\b`),
-		message: "referencia literal a clave privada detectada (G4)",
-	},
-	{
-		name:    "win_user_path",
-		re:      regexp.MustCompile(`(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\s\\/"'<>|]+`),
-		message: "ruta absoluta de perfil de usuario Windows detectada (G4)",
-	},
-	{
-		name:    "unix_user_path",
-		re:      regexp.MustCompile(`(?:^|[\s"'(=:])(?:/home|/Users)/[A-Za-z0-9._-]+(?:/|$|\s|["')])`),
-		message: "ruta absoluta de perfil de usuario Unix/macOS detectada (G4)",
-	},
-	{
-		name:    "bearer_token",
-		re:      regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}`),
-		message: "token Bearer de autorizacion detectado (G4)",
-	},
-	{
-		name:    "known_token",
-		re:      regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-|ant-)?[A-Za-z0-9_\-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{20,}|xox[baprs]-[0-9A-Za-z\-]{10,})\b`),
-		message: "token o API key detectada (G4)",
-	},
-	{
-		name:    "jwt_token",
-		re:      regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\b`),
-		message: "posible token JWT detectado (G4)",
-	},
-	{
-		name:    "conn_uri_credentials",
-		re:      regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver)://[^\s:@/]+:[^\s@/]+@[^\s]+`),
-		message: "cadena de conexion con credenciales detectada (G4)",
-	},
-	{
-		name:    "conn_password_param",
-		re:      regexp.MustCompile(`(?i)(?:^|[;\s"'])(?:password|passwd|pwd)\s*=\s*[^\s;]{3,}`),
-		message: "parametro de contrasena en cadena de conexion detectado (G4)",
-	},
-	{
-		name:    "secret_assignment",
-		re:      regexp.MustCompile(`(?i)\b(?:api_key|apikey|access_token|auth_token|client_secret|secret_key|private_key)\s*[:=]\s*["']?[A-Za-z0-9_\-./+=]{6,}["']?`),
-		message: "asignacion de secreto o clave detectada (G4)",
-	},
-	{
-		name:    "email_address",
-		re:      regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`),
-		message: "correo electronico sensible detectado (G4)",
-	},
 }
 
 var coreVaultFiles = []string{
@@ -148,31 +85,21 @@ func ValidateDocumentMeta(doc Document) []ValidationIssue {
 }
 
 // ScanG4 ejecuta un escaneo determinista linea por linea contra patrones G4
-// sin transcribir el valor sensible encontrado en el mensaje.
+// delegando en pkg/bfcore.ScanG4All sin transcribir el valor sensible encontrado.
 func ScanG4(relPath, content string) []ValidationIssue {
 	normFile := NormalizeRelPath(relPath)
-	lines := strings.Split(normalizeMarkdownContent(content), "\n")
-	var issues []ValidationIssue
-
-	for idx, line := range lines {
-		lineNum := idx + 1
-		matchedPEM := false
-		for _, rule := range g4Rules {
-			if rule.name == "literal_private_key" && matchedPEM {
-				continue
-			}
-			if rule.re.MatchString(line) {
-				if rule.name == "pem_private_key" {
-					matchedPEM = true
-				}
-				issues = append(issues, ValidationIssue{
-					Code:    IssueG4Violation,
-					File:    normFile,
-					Line:    lineNum,
-					Message: rule.message,
-				})
-			}
-		}
+	findings := bfcore.ScanG4All(normalizeMarkdownContent(content))
+	if len(findings) == 0 {
+		return nil
+	}
+	issues := make([]ValidationIssue, 0, len(findings))
+	for _, f := range findings {
+		issues = append(issues, ValidationIssue{
+			Code:    IssueG4Violation,
+			File:    normFile,
+			Line:    f.Line,
+			Message: f.Message,
+		})
 	}
 	return issues
 }
