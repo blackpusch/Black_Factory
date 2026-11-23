@@ -108,6 +108,28 @@ func (s *Store) SaveTriaged(wi *WorkItem, prevQuarantineID string, update, dryRu
 
 	dstPath := filepath.Join(s.workitemsDir(), wi.ID+".json")
 	if dryRun {
+		if existingReady, err := loadWorkItemFile(dstPath); err == nil && existingReady != nil {
+			if existingReady.DedupeKey != wi.DedupeKey {
+				return SaveResult{}, fmt.Errorf("%w: archivo %s tiene dedupe_key %s != %s", ErrIDCollision, wi.ID, existingReady.DedupeKey, wi.DedupeKey)
+			}
+			if existingReady.Sanitization.SanitizedPayloadSHA256 == wi.Sanitization.SanitizedPayloadSHA256 {
+				*wi = *existingReady
+				return SaveResult{
+					ID:            wi.ID,
+					Path:          dstPath,
+					Status:        wi.Status,
+					Lane:          wi.Lane,
+					Revision:      wi.Revision,
+					IdempotentHit: true,
+					DryRun:        true,
+				}, nil
+			}
+			if !update {
+				return SaveResult{}, ErrDedupeConflict
+			}
+			wi.CreatedAt = existingReady.CreatedAt
+			wi.Revision = existingReady.Revision + 1
+		}
 		return SaveResult{
 			ID:       wi.ID,
 			Path:     dstPath,
@@ -138,6 +160,9 @@ func (s *Store) SaveTriaged(wi *WorkItem, prevQuarantineID string, update, dryRu
 		}
 		sameIDQuarPath := filepath.Join(s.quarantineDir(), wi.ID+".json")
 		if qw, qErr := loadWorkItemFile(sameIDQuarPath); qErr == nil {
+			if qw.DedupeKey != "" && qw.DedupeKey != wi.DedupeKey {
+				return fmt.Errorf("%w: archivo en cuarentena %s tiene dedupe_key %s != %s", ErrIDCollision, wi.ID, qw.DedupeKey, wi.DedupeKey)
+			}
 			if existingQuar == nil {
 				existingQuar = qw
 			}
@@ -262,7 +287,18 @@ func (s *Store) SaveQuarantined(wi *WorkItem, prevQuarantineID string, update, d
 	}
 
 	dstPath := filepath.Join(s.quarantineDir(), wi.ID+".json")
+	readyPath := filepath.Join(s.workitemsDir(), wi.ID+".json")
 	if dryRun {
+		if existingReady, rErr := loadWorkItemFile(readyPath); rErr == nil && existingReady != nil {
+			if existingReady.DedupeKey != wi.DedupeKey {
+				return SaveResult{}, ErrIDCollision
+			}
+			if !update {
+				return SaveResult{}, ErrDedupeConflict
+			}
+			wi.CreatedAt = existingReady.CreatedAt
+			wi.Revision = existingReady.Revision + 1
+		}
 		return SaveResult{
 			ID:       wi.ID,
 			Path:     dstPath,
@@ -275,13 +311,27 @@ func (s *Store) SaveQuarantined(wi *WorkItem, prevQuarantineID string, update, d
 	var res SaveResult
 	err := s.withLock(func() error {
 		// Si se paso --update y existia en workitems/<wi.ID>.json pero ahora fallo una compuerta, mover a quarantine/
-		readyPath := filepath.Join(s.workitemsDir(), wi.ID+".json")
 		existingReady, rErr := loadWorkItemFile(readyPath)
 		if rErr == nil && existingReady != nil {
-			if existingReady.DedupeKey != "" && wi.DedupeKey != "" && existingReady.DedupeKey != wi.DedupeKey {
+			if existingReady.DedupeKey != wi.DedupeKey {
 				return ErrIDCollision
 			}
 			if !update {
+				_ = s.appendEventLocked(IntakeEvent{
+					Timestamp:   time.Now().UTC().Format(time.RFC3339),
+					TraceID:     wi.TraceID,
+					Event:       "CONFLICT_DEDUPE",
+					ID:          wi.ID,
+					Revision:    existingReady.Revision,
+					Project:     wi.Project,
+					Source:      wi.Source,
+					SourceRef:   wi.SourceRef,
+					Status:      existingReady.Status,
+					Lane:        existingReady.Lane,
+					RiskLevel:   existingReady.RiskLevel,
+					ReasonCodes: []string{"DEDUPE_CONFLICT"},
+					DurationMs:  durationMs,
+				})
 				return ErrDedupeConflict
 			}
 			wi.CreatedAt = existingReady.CreatedAt
@@ -292,8 +342,21 @@ func (s *Store) SaveQuarantined(wi *WorkItem, prevQuarantineID string, update, d
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+
+		var prevQuarPathToDelete string
+		if prevQuarantineID != "" && prevQuarantineID != wi.ID {
+			prevPath := filepath.Join(s.quarantineDir(), prevQuarantineID+".json")
+			if prevQuar, pErr := loadWorkItemFile(prevPath); pErr == nil {
+				if existingQuar == nil && existingReady == nil {
+					wi.CreatedAt = prevQuar.CreatedAt
+					wi.Revision = prevQuar.Revision + 1
+				}
+				prevQuarPathToDelete = prevPath
+			}
+		}
+
 		if existingQuar != nil {
-			if existingQuar.DedupeKey != "" && wi.DedupeKey != "" && existingQuar.DedupeKey != wi.DedupeKey {
+			if existingQuar.DedupeKey != wi.DedupeKey {
 				return ErrIDCollision
 			}
 			if existingQuar.DedupeKey == "" && wi.DedupeKey == "" &&
@@ -307,17 +370,13 @@ func (s *Store) SaveQuarantined(wi *WorkItem, prevQuarantineID string, update, d
 			} else {
 				wi.Revision = existingQuar.Revision + 1
 			}
-		} else if prevQuarantineID != "" && prevQuarantineID != wi.ID {
-			prevPath := filepath.Join(s.quarantineDir(), prevQuarantineID+".json")
-			if prevQuar, pErr := loadWorkItemFile(prevPath); pErr == nil {
-				wi.CreatedAt = prevQuar.CreatedAt
-				wi.Revision = prevQuar.Revision + 1
-				_ = os.Remove(prevPath)
-			}
 		}
 
 		if err := writeWorkItemAtomic(dstPath, wi); err != nil {
 			return err
+		}
+		if prevQuarPathToDelete != "" {
+			_ = os.Remove(prevQuarPathToDelete)
 		}
 		if existingReady != nil && update {
 			_ = os.Remove(readyPath)
@@ -587,6 +646,9 @@ func (s *Store) VerifyRuntime(repoRoot, vaultRoot string, client BrainClient) (V
 				if jErr := json.Unmarshal([]byte(line), &ev); jErr != nil || ev.Event == "" {
 					report.Errors = append(report.Errors, fmt.Sprintf("intake_events.jsonl:%d JSON invalido", lineNum))
 				}
+			}
+			if sErr := scanner.Err(); sErr != nil {
+				report.Errors = append(report.Errors, fmt.Sprintf("error escaneando intake_events.jsonl: %v", sErr))
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			report.Errors = append(report.Errors, fmt.Sprintf("error leyendo intake_events.jsonl: %v", err))

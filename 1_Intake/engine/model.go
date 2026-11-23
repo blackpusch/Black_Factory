@@ -363,6 +363,12 @@ func ValidateWorkItem(wi *WorkItem) []string {
 	if wi.PathsConfidence != "explicit" && wi.PathsConfidence != "none" {
 		errs = append(errs, fmt.Sprintf("paths_confidence invalido %q", wi.PathsConfidence))
 	}
+	if wi.AffectedPaths == nil {
+		errs = append(errs, "affected_paths no puede ser nil (debe serializarse como [])")
+	}
+	if wi.ImpactFlags == nil {
+		errs = append(errs, "impact_flags no puede ser nil (debe serializarse como [])")
+	}
 	for _, fl := range wi.ImpactFlags {
 		if !validImpactFlags[fl] {
 			errs = append(errs, fmt.Sprintf("impact_flag invalido %q", fl))
@@ -395,6 +401,9 @@ func ValidateWorkItem(wi *WorkItem) []string {
 			errs = append(errs, "status=ready exige al menos un triage_reason")
 		}
 	case "needs_clarification":
+		if wi.Kind != "" && !IsValidKind(wi.Kind) {
+			errs = append(errs, fmt.Sprintf("status=needs_clarification exige kind vacio o dentro del enum permitido, obtuvo %q", wi.Kind))
+		}
 		if wi.DedupeKey != "" {
 			if !reHex64.MatchString(wi.DedupeKey) {
 				errs = append(errs, "dedupe_key en cuarentena debe ser vacio o 64 hex")

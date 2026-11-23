@@ -172,6 +172,9 @@ func (c *SubprocessBrainClient) Context(vaultRoot, dbPath, project string, files
 				resp.RiskHits = append(resp.RiskHits, d.RiskHits...)
 			}
 		}
+		d.RiskHits = nil
+		d.RiskZonesSHA256 = ""
+		d.RiskZonesParseError = ""
 		resp.MatchedDocs = append(resp.MatchedDocs, d)
 	}
 	return resp, inv, nil
@@ -271,8 +274,9 @@ func formatCommandDisplay(bin string, args []string) string {
 }
 
 var (
-	reCatalogCode = regexp.MustCompile(`(?i)^(?:RZ-\d+|ADR-\d+|G[1-6])$`)
-	reFileNameExt = regexp.MustCompile(`(?i)\.(?:go|md|json|sql|yaml|yml|ps1|py|sh)$`)
+	reCatalogCode    = regexp.MustCompile(`(?i)^(?:RZ-\d+|ADR-\d+|G[1-6])$`)
+	reFileNameExt    = regexp.MustCompile(`(?i)\.(?:go|md|json|sql|yaml|yml|ps1|py|sh)$`)
+	reRedactedMarker = regexp.MustCompile(`\[REDACTED:G4:[A-Za-z0-9_]+\]`)
 
 	stopWords = map[string]bool{
 		"and": true, "or": true, "not": true, "near": true,
@@ -298,7 +302,8 @@ func ExtractQueryTokens(title, description string, maxTokens int) []string {
 		order int
 	}
 
-	rawWords := strings.Fields(title + " " + description)
+	cleanedText := reRedactedMarker.ReplaceAllString(title+" "+description, " ")
+	rawWords := strings.Fields(cleanedText)
 	seen := make(map[string]bool)
 	var candidates []scoredToken
 
@@ -414,7 +419,7 @@ func BuildDisjunctiveFTSQuery(tokens []string) string {
 // (sin reparse points) y declara type: project y status: active en su frontmatter YAML.
 func IsProjectActiveOnDisk(vaultRoot, project string) bool {
 	slug := strings.ToLower(strings.TrimSpace(project))
-	if slug == "" || strings.ContainsAny(slug, `/\:..`) {
+	if slug == "" || strings.Contains(slug, "..") || strings.ContainsAny(slug, `/\:`) {
 		return false
 	}
 	projFile := filepath.Join(vaultRoot, "projects", slug+".md")

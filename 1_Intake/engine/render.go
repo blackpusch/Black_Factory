@@ -26,9 +26,9 @@ func RenderWorkItemMarkdown(wi *WorkItem) string {
 
 	b.WriteString("```text\n")
 	b.WriteString("┌─────────────────────────────────────────────────────────────────────────────┐\n")
-	b.WriteString(fmt.Sprintf("│ ID: %-20s  Status: %-20s  Revision: %-8d │\n", wi.ID, wi.Status, wi.Revision))
-	b.WriteString(fmt.Sprintf("│ Project: %-15s  Kind: %-22s  Lane: %-12s │\n", wi.Project, wi.Kind, laneDisplay))
-	b.WriteString(fmt.Sprintf("│ Risk Level: %-12s  AUTOR HITL: %-16v  Template: %-8s │\n", wi.RiskLevel, wi.RequiresAutorHITL, tplDisplay))
+	b.WriteString(fmt.Sprintf("│ ID: %-20s  Status: %-20s  Revision: %-9d │\n", wi.ID, wi.Status, wi.Revision))
+	b.WriteString(fmt.Sprintf("│ Project: %-15s  Kind: %-22s  Lane: %-13s │\n", wi.Project, wi.Kind, laneDisplay))
+	b.WriteString(fmt.Sprintf("│ Risk Level: %-9s  AUTOR HITL: %-6v  Template: %-22s │\n", wi.RiskLevel, wi.RequiresAutorHITL, tplDisplay))
 	b.WriteString("└─────────────────────────────────────────────────────────────────────────────┘\n")
 	b.WriteString("```\n\n")
 

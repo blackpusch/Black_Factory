@@ -157,6 +157,9 @@ func ParseJSONIntake(raw []byte) (RawIntake, error) {
 	if len(clean) == 0 {
 		return RawIntake{}, errors.New("payload JSON vacio")
 	}
+	if clean[0] != '{' {
+		return RawIntake{}, errors.New("JSON invalido: se esperaba un objeto JSON '{...}'")
+	}
 
 	dec := json.NewDecoder(bytes.NewReader(clean))
 	dec.DisallowUnknownFields()

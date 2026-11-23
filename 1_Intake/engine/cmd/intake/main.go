@@ -170,6 +170,9 @@ func cmdIngest(args []string, in io.Reader, out, errOut io.Writer, client intake
 			writeErrorOutput(errOut, asJSON, "JSON_PARSE_ERROR", pErr.Error())
 			return ExitUsageOrError
 		}
+		if hits := intake.ScanDecodedTier1(parsed, strictG4); len(hits) > 0 {
+			return handleTier1Rejection(store, hits[0], rawBytes, parsed.Source, parsed.SourceRef, parsed.Project, dryRun, asJSON, errOut)
+		}
 		baseIntake = parsed
 	} else if !hasAnyCLIField(cliOverrides) {
 		writeErrorOutput(errOut, asJSON, "EMPTY_INPUT", "se requiere --input <archivo.json|-> o banderas CLI de solicitud")
@@ -246,6 +249,10 @@ func cmdResolve(args []string, out, errOut io.Writer, client intake.BrainClient)
 		writeErrorOutput(errOut, asJSON, "NOT_FOUND", err.Error())
 		return ExitUsageOrError
 	}
+	if quarWI.SchemaVersion != intake.SchemaVersion {
+		writeErrorOutput(errOut, asJSON, "UNSUPPORTED_SCHEMA_VERSION", fmt.Sprintf("schema_version %q no soportada en %s (esperaba %q)", quarWI.SchemaVersion, quarWI.ID, intake.SchemaVersion))
+		return ExitUsageOrError
+	}
 
 	var allCLIPaths []string
 	allCLIPaths = append(allCLIPaths, pathFlags...)
@@ -303,13 +310,30 @@ func executeStages2To5(merged intake.RawIntake, opts pipelineOptions, store *int
 
 	// Redaccion en punto fijo Tier 2 e higiene pre-path.Clean de affected_paths
 	sanitized, redactions, metaHasTier2 := intake.SanitizeAndRedactTier2(merged)
+	for _, mv := range []string{sanitized.Project, sanitized.Kind, sanitized.Source, sanitized.SourceRef} {
+		if strings.Contains(mv, "[REDACTED:G4:") {
+			metaHasTier2 = true
+			break
+		}
+	}
 	cleanPaths, invalidPathReason := intake.SanitizeAffectedPaths(sanitized.AffectedPaths, opts.repoRoot)
+	if cleanPaths == nil {
+		cleanPaths = []string{}
+	}
 	sortedFlags, flagsValid := intake.NormalizeAndValidateImpactFlags(sanitized.ImpactFlags)
-	if !flagsValid {
+	if !flagsValid || sortedFlags == nil {
 		sortedFlags = []string{}
 	}
 
-	payloadSHA := intake.ComputeSanitizedSHA256(sanitized, cleanPaths, sortedFlags)
+	// Normalizar kind para que el WorkItem persistido en cuarentena siempre cumpla workitem.schema.json
+	normKind := strings.ToLower(strings.TrimSpace(sanitized.Kind))
+	if !intake.IsValidKind(normKind) {
+		normKind = ""
+	}
+	payloadForHash := sanitized
+	payloadForHash.Kind = normKind
+
+	payloadSHA := intake.ComputeSanitizedSHA256(payloadForHash, cleanPaths, sortedFlags)
 	var dedupeKey string
 	if !metaHasTier2 {
 		dedupeKey = intake.ComputeDedupeKey(sanitized.Project, sanitized.Source, sanitized.SourceRef)
@@ -363,7 +387,7 @@ func executeStages2To5(merged intake.RawIntake, opts pipelineOptions, store *int
 		Title:             strings.TrimSpace(sanitized.Title),
 		Description:       strings.TrimSpace(sanitized.Description),
 		Note:              strings.TrimSpace(sanitized.Note),
-		Kind:              strings.ToLower(strings.TrimSpace(sanitized.Kind)),
+		Kind:              normKind,
 		Source:            strings.ToLower(strings.TrimSpace(sanitized.Source)),
 		SourceRef:         strings.TrimSpace(sanitized.SourceRef),
 		AffectedPaths:     cleanPaths,
@@ -757,11 +781,11 @@ func discoverRepoRoot(flagVal string) string {
 	}
 
 	var starts []string
-	if wd, err := os.Getwd(); err == nil {
-		starts = append(starts, wd)
-	}
 	if exe, err := os.Executable(); err == nil {
 		starts = append(starts, filepath.Dir(exe))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		starts = append(starts, wd)
 	}
 
 	for _, start := range starts {
@@ -781,13 +805,19 @@ func discoverRepoRoot(flagVal string) string {
 }
 
 func isRepoRootDir(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+	has0Brain := false
+	if fi, err := os.Stat(filepath.Join(dir, "0_Brain")); err == nil && fi.IsDir() {
+		has0Brain = true
+	}
+	has1Intake := false
+	if fi2, err2 := os.Stat(filepath.Join(dir, "1_Intake")); err2 == nil && fi2.IsDir() {
+		has1Intake = true
+	}
+	if has0Brain && has1Intake {
 		return true
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "0_Brain")); err == nil && fi.IsDir() {
-		if fi2, err2 := os.Stat(filepath.Join(dir, "1_Intake")); err2 == nil && fi2.IsDir() {
-			return true
-		}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil && (has0Brain || has1Intake) {
+		return true
 	}
 	return false
 }

@@ -50,7 +50,7 @@ func SanitizeAffectedPaths(rawPaths []string, repoRoot string) ([]string, string
 	for _, raw := range expanded {
 		// 1. Verificar rutas personales Tier 2 antes de cualquier recorte
 		if bfcore.MatchesPersonalPathG4(raw) {
-			return nil, "G4_personal_path_in_affected_paths"
+			return []string{}, "G4_personal_path_in_affected_paths"
 		}
 
 		candidate := raw
@@ -65,24 +65,24 @@ func SanitizeAffectedPaths(rawPaths []string, repoRoot string) ([]string, string
 
 		// 3. Validaciones de seguridad previas a path.Clean
 		if candidate == "" {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 		for i := 0; i < len(candidate); i++ {
 			if candidate[i] < 0x20 || candidate[i] == 0x7f {
-				return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+				return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 			}
 		}
 		if strings.HasPrefix(candidate, `\\`) || strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, `\`) {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 		if strings.Contains(candidate, ":") {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 		if strings.HasSuffix(slashCand, "/") {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 		if strings.ContainsAny(slashCand, "*?[") {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 
 		// Recortar prefijos "./" repetidos antes de inspeccionar segmentos
@@ -90,22 +90,22 @@ func SanitizeAffectedPaths(rawPaths []string, repoRoot string) ([]string, string
 			slashCand = strings.TrimPrefix(slashCand, "./")
 		}
 		if slashCand == "" || strings.HasPrefix(slashCand, "/") || strings.Contains(slashCand, "//") {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 
 		segs := strings.Split(slashCand, "/")
 		for _, seg := range segs {
 			if seg == "" || seg == "." || seg == ".." {
-				return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+				return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 			}
 			if isWindowsReservedDeviceSegment(seg) {
-				return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+				return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 			}
 		}
 
 		cleaned := path.Clean(slashCand)
 		if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
-			return nil, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
+			return []string{}, "PATH_TRAVERSAL_OR_INVALID_SCOPE"
 		}
 
 		if !seen[cleaned] {

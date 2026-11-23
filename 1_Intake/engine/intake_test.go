@@ -165,6 +165,18 @@ func TestModelHashingIdentityAndValidation(t *testing.T) {
 	if errs := ValidateWorkItem(&unknownStatus); len(errs) == 0 {
 		t.Fatalf("ValidateWorkItem con status desconocido debia fallar")
 	}
+
+	// Blocker #2: ValidateWorkItem debe rechazar affected_paths == nil y kind fuera de enum en cuarentena
+	nilPathsQuar := *validQuar
+	nilPathsQuar.AffectedPaths = nil
+	if errs := ValidateWorkItem(&nilPathsQuar); len(errs) == 0 {
+		t.Fatalf("ValidateWorkItem debia rechazar AffectedPaths == nil")
+	}
+	badKindQuar := *validQuar
+	badKindQuar.Kind = "hotfix"
+	if errs := ValidateWorkItem(&badKindQuar); len(errs) == 0 {
+		t.Fatalf("ValidateWorkItem debia rechazar kind=\"hotfix\" en cuarentena")
+	}
 }
 
 func TestInputBoundary_Tier1DualPhase_AndTier2Redaction(t *testing.T) {
@@ -209,6 +221,9 @@ func TestInputBoundary_Tier1DualPhase_AndTier2Redaction(t *testing.T) {
 
 	if _, err := ParseJSONIntake([]byte("   ")); err == nil {
 		t.Fatalf("ParseJSONIntake vacio debia fallar")
+	}
+	if _, err := ParseJSONIntake([]byte("null")); err == nil {
+		t.Fatalf("ParseJSONIntake(\"null\") debia fallar")
 	}
 	if _, err := ParseJSONIntake([]byte(`{"project":"bf"} {"extra":1}`)); err == nil {
 		t.Fatalf("ParseJSONIntake con objeto extra debia fallar")
@@ -308,11 +323,11 @@ func TestSanitizeAffectedPaths_AndCountRootModules(t *testing.T) {
 		t.Fatalf("CountRootModules archivos raiz = %v, esperaba [\".\"]", modsRoot)
 	}
 
-	if p, r := SanitizeAffectedPaths([]string{`C:\` + `Users\admin\app.go`}, repoRoot); p != nil || r != "G4_personal_path_in_affected_paths" {
-		t.Fatalf("esperaba G4_personal_path_in_affected_paths, obtuvo paths=%v reason=%q", p, r)
+	if p, r := SanitizeAffectedPaths([]string{`C:\` + `Users\admin\app.go`}, repoRoot); p == nil || len(p) != 0 || r != "G4_personal_path_in_affected_paths" {
+		t.Fatalf("esperaba []string{} (no nil) y G4_personal_path_in_affected_paths, obtuvo paths=%#v reason=%q", p, r)
 	}
-	if p, r := SanitizeAffectedPaths([]string{`/home/` + `alice/app.go`}, repoRoot); p != nil || r != "G4_personal_path_in_affected_paths" {
-		t.Fatalf("esperaba G4_personal_path_in_affected_paths para unix_user_path, obtuvo %v %q", p, r)
+	if p, r := SanitizeAffectedPaths([]string{`/home/` + `alice/app.go`}, repoRoot); p == nil || len(p) != 0 || r != "G4_personal_path_in_affected_paths" {
+		t.Fatalf("esperaba []string{} (no nil) y G4_personal_path_in_affected_paths para unix_user_path, obtuvo %#v %q", p, r)
 	}
 
 	invalidVectors := []string{
@@ -336,20 +351,25 @@ func TestSanitizeAffectedPaths_AndCountRootModules(t *testing.T) {
 		`0_Brain//engine/a.go`,
 	}
 	for _, vec := range invalidVectors {
-		if p, r := SanitizeAffectedPaths([]string{vec}, repoRoot); p != nil || r != "PATH_TRAVERSAL_OR_INVALID_SCOPE" {
-			t.Fatalf("vector invalido %q debia ser rechazado con PATH_TRAVERSAL_OR_INVALID_SCOPE, obtuvo paths=%v reason=%q", vec, p, r)
+		if p, r := SanitizeAffectedPaths([]string{vec}, repoRoot); p == nil || len(p) != 0 || r != "PATH_TRAVERSAL_OR_INVALID_SCOPE" {
+			t.Fatalf("vector invalido %q debia ser rechazado con []string{} (no nil) y PATH_TRAVERSAL_OR_INVALID_SCOPE, obtuvo paths=%#v reason=%q", vec, p, r)
 		}
 	}
 }
 
 func TestBrainClient_DisjunctiveFTS_ReadOnlyPreflight_AndRealSubprocess(t *testing.T) {
 	tokens := ExtractQueryTokens(
-		"Fix AND/OR/NOT/NEAR bug in 0_Brain/engine/validator.go for RZ-002 and ScanG4All",
-		"Check ADR-0001 and workitem.schema.json with camelCaseIdentifier and snake_case_tok",
+		"Fix AND/OR/NOT/NEAR bug in 0_Brain/engine/validator.go for RZ-002 and ScanG4All [REDACTED:G4:win_user_path]",
+		"Check ADR-0001 and workitem.schema.json with camelCaseIdentifier and snake_case_tok [REDACTED:G4:email_address]",
 		0, // default 5
 	)
 	if len(tokens) == 0 || len(tokens) > 5 {
 		t.Fatalf("ExtractQueryTokens len inesperado: %v", tokens)
+	}
+	for _, tok := range tokens {
+		if strings.Contains(tok, "redacted") {
+			t.Fatalf("ExtractQueryTokens no filtro marcador [REDACTED:G4:...]: %v", tokens)
+		}
 	}
 	ftsQ := BuildDisjunctiveFTSQuery(append(tokens, "AND", "OR", "NOT", "NEAR", ""))
 	if !strings.Contains(ftsQ, " OR ") || strings.Contains(ftsQ, `"AND"`) {
@@ -393,6 +413,11 @@ func TestBrainClient_DisjunctiveFTS_ReadOnlyPreflight_AndRealSubprocess(t *testi
 	if !IsProjectActiveOnDisk(vaultDir, "black-factory") {
 		t.Fatalf("IsProjectActiveOnDisk debia ser true para projects/black-factory.md activo")
 	}
+	// Nit #8: proyecto con un solo punto '.' en el slug (ej. "v1.core") es valido si no contiene ".."
+	_ = os.WriteFile(filepath.Join(vaultDir, "projects", "v1.core.md"), []byte("---\nid: p-v1\ntitle: V1\ntype: project\nproject: v1.core\nstatus: active\n---\n# V1\n"), 0o644)
+	if !IsProjectActiveOnDisk(vaultDir, "v1.core") {
+		t.Fatalf("IsProjectActiveOnDisk debia permitir slug con punto simple \"v1.core\"")
+	}
 
 	journalPath := filepath.Join(vaultDir, ".brain-journal.json")
 	_ = os.WriteFile(journalPath, []byte(`{"proposal_id":"p1"}`), 0o644)
@@ -415,6 +440,12 @@ func TestBrainClient_DisjunctiveFTS_ReadOnlyPreflight_AndRealSubprocess(t *testi
 			if err != nil || inv1.ExitCode != 0 || len(ctxResp.RiskHits) == 0 || ctxResp.RiskHits[0].ID != "RZ-001" {
 				t.Fatalf("realClient.Context RZ-001 fallo: err=%v hits=%+v", err, ctxResp.RiskHits)
 			}
+			// Blocker #1: MatchedDocs no debe retener RiskHits, RiskZonesSHA256 ni RiskZonesParseError (viola additionalProperties:false en workitem.schema.json)
+			for _, md := range ctxResp.MatchedDocs {
+				if len(md.RiskHits) != 0 || md.RiskZonesSHA256 != "" || md.RiskZonesParseError != "" {
+					t.Fatalf("MatchedDocs retuvo campos de risk_zones prohibidos por workitem.schema.json: %+v", md)
+				}
+			}
 			qDocs, inv2, err := realClient.Query(realVault, pf.DBPath, BrainQueryOpts{Project: "black-factory", Query: `"validator.go" OR "g4"`, Limit: 5})
 			if err != nil || inv2.ExitCode != 0 || qDocs == nil {
 				t.Fatalf("realClient.Query fallo: err=%v", err)
@@ -432,6 +463,18 @@ func TestDeterministicTriageMatrix_All13Rules_StoreAndRender(t *testing.T) {
 	qInfo := EvaluateMetadataAndScope("WI-111111111111", RawIntake{Kind: "invalid_kind"}, nil, "G4_personal_path_in_affected_paths", true, false)
 	if qInfo == nil || len(qInfo.ReasonCodes) != 3 {
 		t.Fatalf("EvaluateMetadataAndScope debia reportar 3 reason_codes (MISSING_REQUIRED_FIELDS, INVALID_AFFECTED_PATH_G4, UNCERTAIN_SCOPE): %+v", qInfo)
+	}
+	// Major #5: EvaluateMetadataAndScope debe detectar "[REDACTED:G4:..." en source_ref/source/project incluso si metadataHasTier2 == false (en resolve)
+	qInfoRed := EvaluateMetadataAndScope("WI-111111111111", RawIntake{
+		Project:     "black-factory",
+		Title:       "Valid",
+		Description: "Valid",
+		Kind:        "bug",
+		Source:      "cli",
+		SourceRef:   "ticket-[REDACTED:G4:email_address]",
+	}, []string{"0_Brain/engine/validator.go"}, "", false, true)
+	if qInfoRed == nil || len(qInfoRed.MissingFields) == 0 || qInfoRed.MissingFields[0] != "source_ref" {
+		t.Fatalf("EvaluateMetadataAndScope debia rechazar source_ref con marcador [REDACTED:G4:...]: %+v", qInfoRed)
 	}
 	if EvaluateProjectRegistration("WI-111111111111", RawIntake{Project: "unregistered"}, false) == nil {
 		t.Fatalf("EvaluateProjectRegistration(false) debia retornar QuarantineInfo")
@@ -593,11 +636,28 @@ func TestDeterministicTriageMatrix_All13Rules_StoreAndRender(t *testing.T) {
 	if _, err := store.SaveTriaged(&collidingWI, "", true, false, 5); !errors.Is(err, ErrIDCollision) {
 		t.Fatalf("SaveTriaged con colision de prefijo de 48 bits debia retornar ErrIDCollision, obtuvo: %v", err)
 	}
+	// Major #6: SaveTriaged con dryRun=true tambien debe detectar ErrIDCollision y ErrDedupeConflict en modo solo lectura
+	if _, err := store.SaveTriaged(&collidingWI, "", false, true, 5); !errors.Is(err, ErrIDCollision) {
+		t.Fatalf("SaveTriaged(dryRun=true) con colision 48-bit debia retornar ErrIDCollision, obtuvo: %v", err)
+	}
+	diffPayloadWI := *wiStore
+	diffPayloadWI.Sanitization.SanitizedPayloadSHA256 = strings.Repeat("9", 64)
+	if _, err := store.SaveTriaged(&diffPayloadWI, "", false, true, 5); !errors.Is(err, ErrDedupeConflict) {
+		t.Fatalf("SaveTriaged(dryRun=true) con diferente payload SHA-256 sin --update debia retornar ErrDedupeConflict, obtuvo: %v", err)
+	}
+	if dryIdem, err := store.SaveTriaged(wiStore, "", false, true, 5); err != nil || !dryIdem.IdempotentHit || !dryIdem.DryRun {
+		t.Fatalf("SaveTriaged(dryRun=true) con mismo payload SHA-256 debia retornar IdempotentHit=true, obtuvo: %+v (%v)", dryIdem, err)
+	}
 
-	// Markdown rendering check (ready and quarantine)
+	// Markdown rendering check (ready and quarantine) including alignment width
 	mdReady := RenderWorkItemMarkdown(wiStore)
 	if !strings.Contains(mdReady, "AUTO-GENERATED DERIVED VIEW") || strings.Contains(mdReady, "```mermaid") {
 		t.Fatalf("RenderWorkItemMarkdown ready invalido: %s", mdReady)
+	}
+	for _, ln := range strings.Split(mdReady, "\n") {
+		if strings.HasPrefix(ln, "│") && len([]rune(ln)) != len([]rune("┌─────────────────────────────────────────────────────────────────────────────┐")) {
+			t.Fatalf("linea de caja ASCII desalineada (%d runas vs 79): %q", len([]rune(ln)), ln)
+		}
 	}
 
 	wiQuar := &WorkItem{

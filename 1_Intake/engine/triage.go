@@ -20,22 +20,27 @@ func EvaluateMetadataAndScope(wiID string, raw RawIntake, cleanPaths []string, i
 	var details []string
 
 	reqCheck := []struct {
-		name string
-		val  string
+		name   string
+		val    string
+		isMeta bool
 	}{
-		{"project", raw.Project},
-		{"title", raw.Title},
-		{"description", raw.Description},
-		{"kind", raw.Kind},
-		{"source", raw.Source},
-		{"source_ref", raw.SourceRef},
+		{"project", raw.Project, true},
+		{"title", raw.Title, false},
+		{"description", raw.Description, false},
+		{"kind", raw.Kind, true},
+		{"source", raw.Source, true},
+		{"source_ref", raw.SourceRef, true},
 	}
 	for _, req := range reqCheck {
-		if strings.TrimSpace(req.val) == "" {
+		val := strings.TrimSpace(req.val)
+		if val == "" {
+			missingFields = append(missingFields, req.name)
+		} else if req.isMeta && strings.Contains(val, "[REDACTED:G4:") {
+			metadataHasTier2 = true
 			missingFields = append(missingFields, req.name)
 		}
 	}
-	if strings.TrimSpace(raw.Kind) != "" && !IsValidKind(raw.Kind) {
+	if strings.TrimSpace(raw.Kind) != "" && !strings.Contains(raw.Kind, "[REDACTED:G4:") && !IsValidKind(raw.Kind) {
 		missingFields = append(missingFields, "kind")
 		details = append(details, fmt.Sprintf("kind %q fuera del enum permitido {bug, feature, refactor, audit_fix, ops}", raw.Kind))
 	}

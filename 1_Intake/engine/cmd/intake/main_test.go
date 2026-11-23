@@ -122,6 +122,13 @@ func TestCLI_E2E_FullLifecycle_AllExitCodes(t *testing.T) {
 	if code != ExitRejectedG4 {
 		t.Fatalf("esperaba ExitRejectedG4 (3), obtuvo %d (errOut=%s)", code, errOut)
 	}
+	// Blocker #3: Si --input contiene un secreto JSON-escapado en "title" y el usuario pasa --title "Clean override",
+	// ScanDecodedTier1 DEBE ejecutarse sobre baseIntake ANTES de MergeCLIOverrides y rechazar con Exit 3.
+	maskedSecretStdin := `{"project":"black-factory","kind":"bug","source":"cli","source_ref":"SEC-2","title":"\u0067hp_1234567890abcdefghij123456","description":"Clean","affected_paths":["0_Brain/engine/validator.go"]}`
+	code, _, errOut = execCLI(maskedSecretStdin, "ingest", "--input", "-", "--title", "Clean CLI Override", "--json")
+	if code != ExitRejectedG4 {
+		t.Fatalf("Blocker #3: flag --title no debia enmascarar secreto JSON-escapado en --input (esperaba 3, obtuvo %d: %s)", code, errOut)
+	}
 	// Text mode Tier 1 rejection via --strict-g4 on Tier 2 email
 	code, _, errOut = execCLI("", "ingest", "--project", "black-factory", "--title", "contact admin"+"@example.com", "--strict-g4")
 	if code != ExitRejectedG4 || !strings.Contains(errOut, "REJECTED_G4") {
@@ -186,6 +193,35 @@ func TestCLI_E2E_FullLifecycle_AllExitCodes(t *testing.T) {
 		t.Fatalf("esperaba ExitQuarantined (2) por UNREGISTERED_PROJECT, obtuvo %d (%s)", code, outUnreg)
 	}
 
+	// Blocker #2 & Major #5: Quarantine con kind invalido ("hotfix"), ruta personal en affected_paths y email en source_ref
+	// debe persistir affected_paths:[] (no null), kind:"" (no "hotfix"), y resolve sin reemplazar source_ref debe seguir en cuarentena (Exit 2).
+	code, outBadKind, errBadKind := execCLI("", "ingest",
+		"--project", "black-factory",
+		"--kind", "hotfix",
+		"--source", "cli",
+		"--source-ref", "user"+"@example.com",
+		"--title", "Invalid kind and PII ref",
+		"--description", "Testing schema compliance in quarantine",
+		"--path", `C:\`+`Users\alice\app.go`,
+		"--json",
+	)
+	if code != ExitQuarantined {
+		t.Fatalf("esperaba ExitQuarantined (2) para kind=hotfix, obtuvo %d (%s)", code, errBadKind)
+	}
+	if strings.Contains(outBadKind, `"affected_paths": null`) {
+		t.Fatalf("Blocker #2: quarantine JSON serializo affected_paths: null:\n%s", outBadKind)
+	}
+	var badKindWI intake.WorkItem
+	_ = json.Unmarshal([]byte(outBadKind), &badKindWI)
+	if badKindWI.Kind != "" {
+		t.Fatalf("Blocker #2: quarantine debia normalizar kind invalido a \"\", obtuvo %q", badKindWI.Kind)
+	}
+	// Intentar resolve corrigiendo solo kind y path pero dejando source_ref con [REDACTED:G4:email_address] -> debe seguir en cuarentena (Exit 2)
+	code, _, _ = execCLI("", "resolve", "--id", badKindWI.ID, "--kind", "bug", "--path", "0_Brain/engine/validator.go", "--json")
+	if code != ExitQuarantined {
+		t.Fatalf("Major #5: resolve sin reemplazar source_ref redactado [REDACTED:G4:...] debia permanecer en cuarentena (2), obtuvo %d", code)
+	}
+
 	// 3. Exit Code 0 (ExitOK) via resolve: promueve desde quarantine/ a workitems/ y elimina el archivo de quarantine/
 	code, out, errOut = execCLI("", "resolve",
 		quarWI.ID, // positional ID
@@ -224,7 +260,21 @@ func TestCLI_E2E_FullLifecycle_AllExitCodes(t *testing.T) {
 		t.Fatalf("re-ingest idempotente esperaba ExitOK (0), obtuvo %d", code)
 	}
 
-	// 4. Exit Code 5 (ExitDedupeConflict): mismo project+source+source_ref con distinto title sin --update
+	// 4. Exit Code 5 (ExitDedupeConflict): mismo project+source+source_ref con distinto title sin --update (tanto real como con --dry-run)
+	code, _, errOut = execCLI("", "ingest",
+		"--project", "black-factory",
+		"--kind", "bug",
+		"--source", "cli",
+		"--source-ref", "BUG-104",
+		"--title", "Different title causing dedupe conflict",
+		"--description", "Updated description",
+		"--path", "0_Brain/engine/validator.go",
+		"--dry-run",
+		"--json",
+	)
+	if code != ExitDedupeConflict {
+		t.Fatalf("Major #6: ingest --dry-run sobre conflicto de dedupe_key esperaba ExitDedupeConflict (5), obtuvo %d (err=%s)", code, errOut)
+	}
 	code, _, errOut = execCLI("", "ingest",
 		"--project", "black-factory",
 		"--kind", "bug",
@@ -302,6 +352,17 @@ func TestCLI_E2E_FullLifecycle_AllExitCodes(t *testing.T) {
 	// Resolve hacia un dedupe_key que ya existe en workitems/ (BUG-104) sin --update -> Exit 5
 	if c, _, _ := execCLI("", "resolve", "--id", stillQuarWI2.ID, "--source-ref", "BUG-104", "--path", "0_Brain/engine/validator.go"); c != ExitDedupeConflict {
 		t.Fatalf("resolve con colision hacia BUG-104 existente sin --update esperaba ExitDedupeConflict (5), obtuvo %d", c)
+	}
+
+	// Major #5: resolve debe rechazar con Exit 1 un archivo en quarantine/ que tenga un schema_version desconocido (ej. "9.9")
+	badVerPath := filepath.Join(dataDir, "quarantine", stillQuarWI2.ID+".json")
+	if rawQ, rErr := os.ReadFile(badVerPath); rErr == nil {
+		patchedQ := strings.Replace(string(rawQ), `"schema_version": "1.0"`, `"schema_version": "9.9"`, 1)
+		_ = os.WriteFile(badVerPath, []byte(patchedQ), 0o644)
+		if c, _, errVer := execCLI("", "resolve", "--id", stillQuarWI2.ID, "--source-ref", "NEW-REF", "--path", "0_Brain/engine/validator.go"); c != ExitUsageOrError || !strings.Contains(errVer, "UNSUPPORTED_SCHEMA_VERSION") {
+			t.Fatalf("Major #5: resolve con schema_version=9.9 esperaba ExitUsageOrError (1), obtuvo %d (%s)", c, errVer)
+		}
+		_ = os.WriteFile(badVerPath, rawQ, 0o644)
 	}
 
 	// Probar ingest desde un archivo JSON real (--input <file.json>)
