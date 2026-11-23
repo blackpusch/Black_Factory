@@ -1,0 +1,513 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blackfactory.local/schemas/workitem.schema.json",
+  "title": "Black Factory WorkItem v1.0",
+  "description": "Canonical deterministic WorkItem emitted by 1_Intake (intake.exe).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "dedupe_key",
+    "trace_id",
+    "revision",
+    "status",
+    "created_at",
+    "updated_at",
+    "project",
+    "title",
+    "description",
+    "note",
+    "kind",
+    "source",
+    "source_ref",
+    "affected_paths",
+    "paths_confidence",
+    "impact_flags",
+    "lane",
+    "suggested_template",
+    "risk_level",
+    "requires_autor_hitl",
+    "risk_hits",
+    "triage_reasons",
+    "sanitization",
+    "brain_evidence",
+    "quarantine_info"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^WI-[0-9a-f]{12}$"
+    },
+    "dedupe_key": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "needs_clarification"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "bug",
+        "feature",
+        "refactor",
+        "audit_fix",
+        "ops",
+        ""
+      ]
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_ref": {
+      "type": "string"
+    },
+    "affected_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "paths_confidence": {
+      "type": "string",
+      "enum": [
+        "explicit",
+        "none"
+      ]
+    },
+    "impact_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "contract",
+          "schema",
+          "db",
+          "auth",
+          "security",
+          "governance"
+        ]
+      }
+    },
+    "lane": {
+      "type": "string",
+      "enum": [
+        "ASDD",
+        "FTD",
+        ""
+      ]
+    },
+    "suggested_template": {
+      "type": "string",
+      "enum": [
+        "modulo_nuevo",
+        "correccion_hallazgos",
+        "auditoria_e2e",
+        "mapeo_estatico",
+        ""
+      ]
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "BAJO",
+        "MEDIO",
+        "ALTO",
+        "CRITICO"
+      ]
+    },
+    "requires_autor_hitl": {
+      "type": "boolean"
+    },
+    "risk_hits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/risk_hit"
+      }
+    },
+    "triage_reasons": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/triage_reason"
+      }
+    },
+    "sanitization": {
+      "$ref": "#/$defs/sanitization_report"
+    },
+    "brain_evidence": {
+      "$ref": "#/$defs/brain_evidence"
+    },
+    "quarantine_info": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/quarantine_info"
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "ready"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "dedupe_key": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "bug",
+          "feature",
+          "refactor",
+          "audit_fix",
+          "ops"
+        ]
+      },
+      "lane": {
+        "type": "string",
+        "enum": [
+          "ASDD",
+          "FTD"
+        ]
+      },
+      "suggested_template": {
+        "type": "string",
+        "enum": [
+          "modulo_nuevo",
+          "correccion_hallazgos",
+          "auditoria_e2e",
+          "mapeo_estatico"
+        ]
+      },
+      "paths_confidence": {
+        "const": "explicit"
+      },
+      "quarantine_info": {
+        "type": "null"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "lane": {
+        "const": ""
+      },
+      "suggested_template": {
+        "const": ""
+      },
+      "quarantine_info": {
+        "$ref": "#/$defs/quarantine_info"
+      }
+    }
+  },
+  "$defs": {
+    "risk_hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "project",
+        "level",
+        "matched_paths",
+        "mandatory_gate"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "BAJO",
+            "MEDIO",
+            "ALTO",
+            "CRITICO"
+          ]
+        },
+        "matched_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mandatory_gate": {
+          "type": "string"
+        }
+      }
+    },
+    "triage_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "rule_kind",
+        "ruleset_version",
+        "detail"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rule_kind": {
+          "type": "string",
+          "const": "deterministic"
+        },
+        "ruleset_version": {
+          "type": "string",
+          "const": "triage-det-v1.0"
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "g4_redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule",
+        "field",
+        "count"
+      ],
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sanitization_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strict_g4",
+        "sanitized_payload_sha256",
+        "g4_redactions"
+      ],
+      "properties": {
+        "strict_g4": {
+          "type": "boolean"
+        },
+        "sanitized_payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "g4_redactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/g4_redaction"
+          }
+        }
+      }
+    },
+    "brain_invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "exit_code",
+        "duration_ms",
+        "result_count"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "result_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "brain_doc_match": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rel_path",
+        "type",
+        "status",
+        "verified_head",
+        "transversal"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "rel_path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "verified_head": {
+          "type": "string"
+        },
+        "transversal": {
+          "type": "boolean"
+        },
+        "covers_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matched_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "brain_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vault_path",
+        "brain_db_mtime",
+        "risk_zones_sha256",
+        "extracted_query_tokens",
+        "invocations",
+        "matched_docs"
+      ],
+      "properties": {
+        "vault_path": {
+          "type": "string"
+        },
+        "brain_db_mtime": {
+          "type": "string"
+        },
+        "risk_zones_sha256": {
+          "type": "string"
+        },
+        "extracted_query_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "invocations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/brain_invocation"
+          }
+        },
+        "matched_docs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/brain_doc_match"
+          }
+        }
+      }
+    },
+    "quarantine_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_codes",
+        "missing_fields",
+        "invalid_path_reason",
+        "detail",
+        "resolve_hint"
+      ],
+      "properties": {
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "invalid_path_reason": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "resolve_hint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

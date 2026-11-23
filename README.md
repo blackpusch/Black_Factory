@@ -38,9 +38,22 @@ Repositorio oficial: `https://github.com/blackpusch/Black_Factory`
 
 ## System Verification
 
+- `Shared Core (pkg/bfcore)`:
+  ```powershell
+  Set-Location "C:\Black Factory\pkg\bfcore"
+  $env:CGO_ENABLED = "0"
+  go test -count=1 ./...
+  ```
 - `0_Brain Engine`:
   ```powershell
   Set-Location "C:\Black Factory\0_Brain\engine"
+  $env:CGO_ENABLED = "0"
+  go test -count=1 ./...
+  ```
+- `1_Intake Engine`:
+  ```powershell
+  Set-Location "C:\Black Factory\1_Intake\engine"
+  $env:CGO_ENABLED = "0"
   go test -count=1 ./...
   ```
 - `GengiSWAP Engine`:
@@ -56,7 +69,7 @@ Repositorio oficial: `https://github.com/blackpusch/Black_Factory`
 - `GengiSWAP/`: Protocolos v2 (`gengis_swap_common.md`, `gengis_swap_prep_protocol.md`, `gengis_swap_chef_protocol.md`), plantillas `v1` (`templates/`) y motor determinista en **Go 1.24** (`GengiSWAP/engine/`, módulo `gengiswap/ring`).
 - [`Docs/PROYECTO_TUNGSTENO.md`](Docs/PROYECTO_TUNGSTENO.md): Referencia técnica del motor `gengis`.
 - **Artefactos privados / locales (ignorados en `.gitignore`):**
-  - `0_Brain/vault/`, `0_Brain/brain.exe` y archivos `*.db` (`Opción i`).
+  - `0_Brain/vault/`, `0_Brain/brain.exe`, `1_Intake/runtime/`, `1_Intake/intake.exe` y archivos `*.db` (`Opción i`).
   - `GengiSWAP/gengis.exe` y `GengiSWAP/gengis_global_log.md`.
   - `C:\Desarrollo\GengiSWAP_data\` para tareas activas/archivadas (`gengis_task\`) y respaldos.
 
@@ -75,4 +88,15 @@ go build -o ..\gengis.exe .\cmd\gengis
 
 ```powershell
 & "C:\Black Factory\GengiSWAP\gengis.exe" status "C:\Desarrollo\GengiSWAP_data\gengis_task\<ID>" --root "C:\Black Factory\GengiSWAP"
+```
+
+### Verificación y Compilación de `1_Intake` (`intake.exe`)
+
+```powershell
+Set-Location "C:\Black Factory\1_Intake\engine"
+$env:CGO_ENABLED = "0"
+go vet ./...
+go test -count=1 -cover ./...
+go build -o ..\intake.exe .\cmd\intake
+& "C:\Black Factory\1_Intake\intake.exe" verify --vault "C:\Black Factory\0_Brain\vault" --data-dir "C:\Black Factory\1_Intake\runtime" --repo-root "C:\Black Factory" --json
 ```

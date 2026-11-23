@@ -19,9 +19,11 @@ __pycache__/
 Thumbs.db
 .DS_Store
 
-# 0_Brain: bóveda privada de procesos/proyectos e índices locales (Opción i: untracked por defecto)
+# 0_Brain y 1_Intake: bóveda privada, runtime operativo e índices/binarios locales (Opción i: untracked por defecto)
 0_Brain/vault/
 0_Brain/brain.exe
+1_Intake/runtime/
+1_Intake/intake.exe
 *.db
 *.db-wal
 *.db-shm
