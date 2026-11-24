@@ -68,6 +68,10 @@ Responsable de conectar los `WorkItem` listos de `1_Intake` (`schema_version: "1
 - Compila carpetas de tarea `GengiSWAP` en `<task-root>/<task-id>` bajo política estricta *create-only* (`LIVE_TASK_STATE` / `TASK_DIR_EXISTS`).
 - Invoca `0_Brain/brain.exe` (`context --json`) en modo estrictamente de solo lectura y `git check-ignore` en `verify`.
 
+## Deuda Técnica Conocida
+
+- **`TD-001` (`2026-11-24`, diferida tras `bf_02_spec_writer_v1`):** endurecimiento opcional de `WorkItem.TraceID` (`reTraceID` + `checkIndexProseSafety`), `TargetBranch`, paridad `\r`/`~~~`/`#` en `verifyRenderedGengisParity` y rechazo de `verify_step_id` no vacío en `review_gate`. Ver detalle con referencias `G5` en [`Docs/TECH_DEBT.md`](../Docs/TECH_DEBT.md#td-001--hardening-de-workitemtraceid-y-paridad-fina-en-2_spec_writer).
+
 ## Verification
 ```powershell
 Set-Location "C:\Black Factory\2_Spec_Writer\engine"
