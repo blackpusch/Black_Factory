@@ -69,6 +69,7 @@ func TestSchemaJSONTagParity(t *testing.T) {
 		assertSchemaObjectMatchesType(t, defs["scope_info"].(map[string]any), reflect.TypeOf(ScopeInfo{}), "ScopeInfo")
 		assertSchemaObjectMatchesType(t, defs["bundle_brain_info"].(map[string]any), reflect.TypeOf(BundleBrainInfo{}), "BundleBrainInfo")
 		assertSchemaObjectMatchesType(t, defs["brain_doc_summary"].(map[string]any), reflect.TypeOf(BrainDocSummary{}), "BrainDocSummary")
+		assertSchemaObjectMatchesType(t, defs["risk_hit"].(map[string]any), reflect.TypeOf(bfcore.RiskHit{}), "RiskHit")
 		assertSchemaObjectMatchesType(t, defs["red_evidence"].(map[string]any), reflect.TypeOf(RedEvidence{}), "RedEvidence")
 		assertSchemaObjectMatchesType(t, defs["command_evidence"].(map[string]any), reflect.TypeOf(CommandEvidence{}), "CommandEvidence")
 		assertSchemaObjectMatchesType(t, defs["tdd_evidence"].(map[string]any), reflect.TypeOf(TDDEvidence{}), "TDDEvidence")
@@ -369,14 +370,23 @@ Falla si falta model.go
 		t.Fatalf("LoadRingState: %+v (%v)", st, err)
 	}
 
-	// VerifyCommands compatibility check against untracked Option i paths
-	chunks := []RingChunk{{
-		ID:             "01_step",
-		VerifyCommands: []string{`0_Brain\brain.exe query --q test`},
-	}}
-	ptr, msg := ValidateVerifyCommandsWorktreeCompat(chunks, map[string]bool{"3_Builder/engine/model.go": true})
-	if ptr == "" || msg == "" {
-		t.Fatalf("expected incompatibility for untracked 0_Brain/brain.exe")
+	// VerifyCommands compatibility check against untracked Option i paths (incl. ./, .\, ../, and absolute)
+	badCmds := []string{
+		`0_Brain\brain.exe query --q test`,
+		`.\0_Brain\brain.exe query --q test`,
+		`./0_Brain/brain.exe query --q test`,
+		`../0_Brain/brain.exe query --q test`,
+		`C:\Black Factory\0_Brain\brain.exe query --q test`,
+	}
+	for _, badCmd := range badCmds {
+		chunks := []RingChunk{{
+			ID:             "01_step",
+			VerifyCommands: []string{badCmd},
+		}}
+		ptr, msg := ValidateVerifyCommandsWorktreeCompat(chunks, map[string]bool{"3_Builder/engine/model.go": true})
+		if ptr == "" || msg == "" {
+			t.Fatalf("expected incompatibility for untracked Option i command %q", badCmd)
+		}
 	}
 	chunksOK := []RingChunk{{
 		ID:             "01_step",
@@ -566,5 +576,68 @@ func TestShellRunnerAndSanitizeCommandOutputG4(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(cmd+excerpt), "alice") {
 		t.Fatalf("expected Tier 2 redacted from cmd and excerpt")
+	}
+}
+
+type stubGitModesClient struct {
+	ExecGitClient
+	rawZ       []byte
+	stageModes map[string]string
+	porcelainZ []byte
+}
+
+func (s stubGitModesClient) DiffRawZ(context.Context, string, string) ([]byte, error) {
+	return s.rawZ, nil
+}
+func (s stubGitModesClient) StageModes(context.Context, string) (map[string]string, error) {
+	return s.stageModes, nil
+}
+func (s stubGitModesClient) StatusPorcelainZ(context.Context, string) ([]byte, error) {
+	return s.porcelainZ, nil
+}
+func (s stubGitModesClient) DiffUnified(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func TestGitWorktreeForbiddenModes120000And160000AndRawModePrecedence(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "script.sh"), []byte("#!/bin/sh\necho hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		rawZ  []byte
+		stage map[string]string
+	}{
+		{"symlink_raw", []byte(":100644 120000 aaaa bbbb M\x00link\x00"), map[string]string{}},
+		{"submodule_stage", []byte(""), map[string]string{"sub": "160000"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gc := stubGitModesClient{rawZ: tc.rawZ, stageModes: tc.stage}
+			_, err := ComputeWorktreeSnapshot(ctx, gc, repo, repo, strings.Repeat("a", 40))
+			if !errors.Is(err, ErrForbiddenGitEntry) {
+				t.Fatalf("expected ErrForbiddenGitEntry, got %v", err)
+			}
+		})
+	}
+
+	// rawModes "100644" must take precedence over stageModes "100755"
+	gc := stubGitModesClient{
+		rawZ:       []byte(":100755 100644 aaaa bbbb M\x00script.sh\x00"),
+		stageModes: map[string]string{"script.sh": "100755"},
+		porcelainZ: []byte(" M script.sh\x00"),
+	}
+	snap, err := ComputeWorktreeSnapshot(ctx, gc, repo, repo, strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatalf("ComputeWorktreeSnapshot: %v", err)
+	}
+	if len(snap.ChangedFiles) != 1 || snap.ChangedFiles[0].Mode != "0644" {
+		t.Fatalf("expected rawModes 0644 precedence, got %+v", snap.ChangedFiles)
 	}
 }

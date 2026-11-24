@@ -352,6 +352,9 @@ func ExtractIndexTargetRepo(indexPath string) (string, error) {
 // BindIndexTargetRepo reescribe atomicamente la unica linea "Repositorio destino:" bajo
 // ## Directorio de Destino Real en indexPath apuntando a absWorktreeClean y verifica paridad round-trip.
 func BindIndexTargetRepo(indexPath, absWorktreeClean string) error {
+	if err := bfcore.CheckNoReparseChain("", indexPath); err != nil {
+		return err
+	}
 	if hits := bfcore.ScanTier1("worktree_path", absWorktreeClean, false); len(hits) > 0 {
 		return fmt.Errorf("%w: secreto Tier 1 en ruta worktree (%s)", ErrG4Violation, hits[0].Rule)
 	}
@@ -489,7 +492,7 @@ func containsPathToken(normCmd, target string) bool {
 
 func isPathBoundary(b byte) bool {
 	switch b {
-	case ' ', '\t', '"', '\'', '=', ';', '&', '|', '(', ')':
+	case ' ', '\t', '"', '\'', '=', ';', '&', '|', '(', ')', '/':
 		return true
 	default:
 		return false

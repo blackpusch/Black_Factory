@@ -253,6 +253,9 @@ func ComputePathIdentity(rawPath string) (basename string, sha256Hex string, abs
 // LoadSessionStrict carga y valida estrictamente <taskStateDir>/session.json en modo fail-closed.
 func LoadSessionStrict(taskStateDir string) (SessionState, error) {
 	sessionPath := filepath.Join(taskStateDir, "session.json")
+	if err := bfcore.CheckNoReparseChain("", sessionPath); err != nil {
+		return SessionState{}, err
+	}
 	if err := bfcore.CheckNoReparseChain(taskStateDir, sessionPath); err != nil {
 		return SessionState{}, err
 	}

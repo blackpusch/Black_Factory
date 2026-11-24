@@ -286,10 +286,14 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 			return err
 		}
 		mode := "0644"
-		if m := rawModes[rel]; m == "100755" {
-			mode = "0755"
-		} else if sm := stageModes[rel]; sm == "100755" {
-			mode = "0755"
+		if m, ok := rawModes[rel]; ok {
+			if m == "100755" {
+				mode = "0755"
+			}
+		} else if sm, ok := stageModes[rel]; ok {
+			if sm == "100755" {
+				mode = "0755"
+			}
 		} else if fi.Mode()&0o111 != 0 {
 			mode = "0755"
 		}
@@ -302,13 +306,16 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 		return nil
 	}
 
+	untrackedModes := map[string]string{}
 	for _, e := range entries {
 		switch {
 		case e.XY == "??":
 			if err := addPresent(e.Path, "added"); err != nil {
 				return WorktreeSnapshot{}, err
 			}
-			untracked = append(untracked, strings.ReplaceAll(e.Path, `\`, "/"))
+			rel := strings.ReplaceAll(e.Path, `\`, "/")
+			untracked = append(untracked, rel)
+			untrackedModes[rel] = byKey[changeKey{path: rel, status: "added"}].Mode
 		case strings.ContainsAny(e.XY, "R"):
 			if err := addPresent(e.Path, "renamed"); err != nil {
 				return WorktreeSnapshot{}, err
@@ -363,7 +370,7 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 		if fullDiff.Len() > 0 && !strings.HasSuffix(fullDiff.String(), "\n") {
 			fullDiff.WriteByte('\n')
 		}
-		hunk, err := buildUntrackedUnifiedDiff(worktreePath, rel)
+		hunk, err := buildUntrackedUnifiedDiff(worktreePath, rel, untrackedModes[rel])
 		if err != nil {
 			return WorktreeSnapshot{}, err
 		}
@@ -433,15 +440,19 @@ func hashRawFileStreaming(absPath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func buildUntrackedUnifiedDiff(worktreePath, rel string) (string, error) {
+func buildUntrackedUnifiedDiff(worktreePath, rel, mode string) (string, error) {
 	abs := filepath.Join(worktreePath, filepath.FromSlash(rel))
 	raw, err := ReadFileWithShortRetry(abs)
 	if err != nil {
 		return "", err
 	}
+	gitMode := "100644"
+	if mode == "0755" {
+		gitMode = "100755"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", rel, rel)
-	fmt.Fprintf(&b, "new file mode 100644\n")
+	fmt.Fprintf(&b, "new file mode %s\n", gitMode)
 	if decoded, isU16 := decodeUTF16BOMIfPresent(raw); isU16 {
 		writeAddedLinesHunk(&b, rel, decoded)
 		return b.String(), nil

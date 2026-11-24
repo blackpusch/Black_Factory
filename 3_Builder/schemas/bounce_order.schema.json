@@ -151,6 +151,54 @@
     "properties": {
       "remediation_items": {
         "minItems": 1
+      },
+      "reviewer_verdicts": {
+        "anyOf": [
+          {
+            "properties": {
+              "security": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "code_architecture": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "ux": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "ui": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     }
   },
@@ -187,6 +235,24 @@
         },
         "model_id": {
           "type": "string"
+        }
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NA"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "na_reason"
+        ],
+        "properties": {
+          "na_reason": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
