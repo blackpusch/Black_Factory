@@ -207,20 +207,25 @@ func TriageWorkItem(wi *WorkItem, contextResp BrainContextResponse, maxFTDFiles 
 		})
 	}
 
-	// Regla 11: MULTI_MODULE_OR_FILE_THRESHOLD
-	rootMods := CountRootModules(wi.AffectedPaths)
-	if len(rootMods) > 1 || len(wi.AffectedPaths) > maxFTDFiles {
+	// Regla 11: MULTI_MODULE_OR_FILE_THRESHOLD (Opcion 5B compartida en pkg/bfcore)
+	ftdEval := bfcore.EvaluateFTDBounds(wi.AffectedPaths, maxFTDFiles)
+	if !ftdEval.WithinBounds {
 		structuralOrRiskTrigger = true
 		reasons = append(reasons, TriageReason{
 			Code:           "MULTI_MODULE_OR_FILE_THRESHOLD",
 			RuleKind:       "deterministic",
 			RulesetVersion: TriageDetRulesetVersion,
-			Detail:         fmt.Sprintf("alcance abarca %d modulo(s) raiz (%s) y %d archivo(s) (umbral FTD: 1 modulo y <= %d archivos)", len(rootMods), strings.Join(rootMods, ", "), len(wi.AffectedPaths), maxFTDFiles),
+			Detail: fmt.Sprintf(
+				"alcance abarca %d modulo(s) raiz (%s), %d archivo(s) efectivos (%d fisicos, %d tests Go exentos; umbral FTD: <= %d modulo, <= %d efectivos, <= %d fisicos)",
+				len(ftdEval.RootModules), strings.Join(ftdEval.RootModules, ", "),
+				ftdEval.EffectiveCount, ftdEval.PhysicalCount, ftdEval.ExemptTestCount,
+				bfcore.MaxFTDRootModules, maxFTDFiles, bfcore.MaxFTDPhysicalFiles,
+			),
 		})
 	}
 
 	// Regla 12: NO_BRAIN_COVERAGE
-	uncovered := findUncoveredPaths(wi.AffectedPaths, contextResp.MatchedDocs)
+	uncovered := bfcore.FindUncoveredPaths(wi.AffectedPaths, contextResp.MatchedDocs)
 	if len(uncovered) > 0 {
 		noBrainCoverageFired = true
 		reasons = append(reasons, TriageReason{
@@ -240,7 +245,10 @@ func TriageWorkItem(wi *WorkItem, contextResp BrainContextResponse, maxFTDFiles 
 			Code:           "FTD_ELIGIBLE_BOUNDED_MAINTENANCE",
 			RuleKind:       "deterministic",
 			RulesetVersion: TriageDetRulesetVersion,
-			Detail:         fmt.Sprintf("Mantenimiento acotado (%s) en 1 modulo (%d<=%d archivos) con cobertura activa wiki/adr en 0_Brain, 0 impact_flags y riesgo %s (no CRITICO)", kindLow, len(wi.AffectedPaths), maxFTDFiles, wi.RiskLevel),
+			Detail: fmt.Sprintf(
+				"Mantenimiento acotado (%s) en 1 modulo (%d<=%d archivos efectivos; %d fisicos, %d tests Go exentos) con cobertura activa wiki/adr en 0_Brain, 0 impact_flags y riesgo %s (no CRITICO)",
+				kindLow, ftdEval.EffectiveCount, maxFTDFiles, ftdEval.PhysicalCount, ftdEval.ExemptTestCount, wi.RiskLevel,
+			),
 		})
 	}
 
@@ -249,43 +257,6 @@ func TriageWorkItem(wi *WorkItem, contextResp BrainContextResponse, maxFTDFiles 
 	wi.QuarantineInfo = nil
 	wi.TriageReasons = reasons
 	wi.SuggestedTemplate = selectSuggestedTemplate(wi.Status, wi.Lane, kindLow, noBrainCoverageFired, structuralOrRiskTrigger)
-}
-
-func findUncoveredPaths(affectedPaths []string, matchedDocs []BrainDocMatch) []string {
-	var uncovered []string
-	for _, file := range affectedPaths {
-		covered := false
-		for _, doc := range matchedDocs {
-			if !strings.EqualFold(doc.Status, "active") {
-				continue
-			}
-			if !strings.EqualFold(doc.Type, "wiki") && !strings.EqualFold(doc.Type, "adr") {
-				continue
-			}
-			for _, mp := range doc.MatchedPaths {
-				if strings.EqualFold(bfcore.NormalizeCoverPath(mp), bfcore.NormalizeCoverPath(file)) {
-					covered = true
-					break
-				}
-			}
-			if covered {
-				break
-			}
-			for _, cp := range doc.CoversPaths {
-				if bfcore.MatchCoverPathFold(cp, file) {
-					covered = true
-					break
-				}
-			}
-			if covered {
-				break
-			}
-		}
-		if !covered {
-			uncovered = append(uncovered, file)
-		}
-	}
-	return uncovered
 }
 
 func selectSuggestedTemplate(status, lane, kind string, noBrainCoverageFired, structuralOrRiskTrigger bool) string {

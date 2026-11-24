@@ -17,7 +17,7 @@ const (
 	SchemaVersion           = "1.0"
 	TriageDetRulesetVersion = "triage-det-v1.0"
 	MaxInputBytes           = 1 << 20 // 1 MiB
-	DefaultMaxFTDFiles      = 5
+	DefaultMaxFTDFiles      = bfcore.DefaultMaxFTDFiles
 )
 
 var (
@@ -80,14 +80,8 @@ type SanitizationReport struct {
 	G4Redactions           []G4Redaction `json:"g4_redactions"`
 }
 
-// RiskHit representa una zona de riesgo de wiki/risk_zones.md que coincidio con affected_paths.
-type RiskHit struct {
-	ID            string   `json:"id"`
-	Project       string   `json:"project"`
-	Level         string   `json:"level"`
-	MatchedPaths  []string `json:"matched_paths"`
-	MandatoryGate string   `json:"mandatory_gate"`
-}
+// RiskHit reexporta bfcore.RiskHit para el paquete intake.
+type RiskHit = bfcore.RiskHit
 
 // TriageReason describe una regla determinista disparada durante la asignacion de carril.
 type TriageReason struct {
@@ -97,29 +91,11 @@ type TriageReason struct {
 	Detail         string `json:"detail"`
 }
 
-// BrainInvocation registra la evidencia literal G1 de una consulta a 0_Brain/brain.exe.
-type BrainInvocation struct {
-	Command     string `json:"command"`
-	ExitCode    int    `json:"exit_code"`
-	DurationMs  int64  `json:"duration_ms"`
-	ResultCount int    `json:"result_count"`
-}
+// BrainInvocation reexporta bfcore.BrainInvocation para el paquete intake.
+type BrainInvocation = bfcore.BrainInvocation
 
-// BrainDocMatch resume un documento OKF coincidente devuelto por 0_Brain.
-type BrainDocMatch struct {
-	ID                  string    `json:"id"`
-	RelPath             string    `json:"rel_path"`
-	Type                string    `json:"type"`
-	Status              string    `json:"status"`
-	Project             string    `json:"project,omitempty"`
-	VerifiedHead        string    `json:"verified_head"`
-	Transversal         bool      `json:"transversal"`
-	CoversPaths         []string  `json:"covers_paths,omitempty"`
-	MatchedPaths        []string  `json:"matched_paths,omitempty"`
-	RiskHits            []RiskHit `json:"risk_hits,omitempty"`
-	RiskZonesSHA256     string    `json:"risk_zones_sha256,omitempty"`
-	RiskZonesParseError string    `json:"risk_zones_parse_error,omitempty"`
-}
+// BrainDocMatch reexporta bfcore.BrainDocMatch para el paquete intake.
+type BrainDocMatch = bfcore.BrainDocMatch
 
 // BrainEvidence agrupa toda la evidencia de consulta Read-Before-Act contra 0_Brain.
 type BrainEvidence struct {
@@ -320,12 +296,9 @@ func NormalizeAndValidateImpactFlags(flags []string) ([]string, bool) {
 	return out, true
 }
 
-// RiskLevelRank devuelve la severidad numerica (0..4) de un nivel de riesgo.
+// RiskLevelRank delega en bfcore.RiskLevelRank para obtener la severidad numerica (0..4).
 func RiskLevelRank(level string) int {
-	if r, ok := riskLevelRank[strings.ToUpper(strings.TrimSpace(level))]; ok {
-		return r
-	}
-	return 0
+	return bfcore.RiskLevelRank(level)
 }
 
 // ValidateWorkItem verifica todas las invariantes del esquema WorkItem v1.0 y ejecuta bfcore.ScanG4All

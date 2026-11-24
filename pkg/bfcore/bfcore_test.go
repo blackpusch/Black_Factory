@@ -1,6 +1,9 @@
 package bfcore
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -313,5 +316,352 @@ func TestReparseAndAncestorChain(t *testing.T) {
 	}
 	if MatchCoverPath("pkg/bfcore/*.md", "pkg/bfcore/g4.go") {
 		t.Fatalf("MatchCoverPath no debia coincidir con extension distinta")
+	}
+}
+
+func TestEvaluateFTDBounds_Option5B(t *testing.T) {
+	if DefaultMaxFTDFiles != 5 || MaxFTDExemptGoTests != 5 || MaxFTDPhysicalFiles != 10 || MaxFTDRootModules != 1 {
+		t.Fatalf("constantes FTD inesperadas: max=%d exempt=%d phys=%d mods=%d",
+			DefaultMaxFTDFiles, MaxFTDExemptGoTests, MaxFTDPhysicalFiles, MaxFTDRootModules)
+	}
+
+	if mods := CountRootModules(nil); mods != nil {
+		t.Fatalf("CountRootModules(nil) = %v, esperaba nil", mods)
+	}
+	if mods := CountRootModules([]string{"README.md", "go.work"}); len(mods) != 1 || mods[0] != "." {
+		t.Fatalf("CountRootModules raiz = %v, esperaba [\".\"]", mods)
+	}
+	if mods := CountRootModules([]string{"0_Brain/a.go", "0_brain/b.go"}); len(mods) != 1 || mods[0] != "0_Brain" {
+		t.Fatalf("CountRootModules case-insensitive = %v, esperaba [\"0_Brain\"]", mods)
+	}
+
+	// Lista vacia -> WithinBounds: false
+	emptyEval := EvaluateFTDBounds(nil, 0)
+	if emptyEval.WithinBounds || emptyEval.PhysicalCount != 0 || emptyEval.EffectiveCount != 0 {
+		t.Fatalf("EvaluateFTDBounds(nil) debia ser WithinBounds=false, obtuvo %+v", emptyEval)
+	}
+
+	// 5 productivos + 5 *_test.go hermanos en mismo directorio = 10 fisicos, 5 efectivos, 5 exentos -> PASS (maxEffective <= 0 usa default 5)
+	pass10 := EvaluateFTDBounds([]string{
+		"0_Brain/engine/a.go",
+		"0_Brain/engine/b.go",
+		"0_Brain/engine/c.go",
+		"0_Brain/engine/d.go",
+		"0_Brain/engine/e.go",
+		"0_Brain/engine/a_test.go",
+		"0_Brain/engine/b_test.go",
+		"0_Brain/engine/c_test.go",
+		"0_Brain/engine/d_test.go",
+		"0_Brain/engine/E_TEST.GO",
+		"0_brain/engine/a.go", // duplicado case-insensitive ignorado
+	}, 0)
+	if !pass10.WithinBounds || pass10.PhysicalCount != 10 || pass10.EffectiveCount != 5 || pass10.ExemptTestCount != 5 || len(pass10.RootModules) != 1 {
+		t.Fatalf("5 productivos + 5 *_test.go hermanos debia pasar FTD: %+v", pass10)
+	}
+
+	// 5 productivos + 6 *_test.go hermanos = 11 fisicos, 6 efectivos, 5 exentos -> FAIL
+	fail11 := EvaluateFTDBounds([]string{
+		"0_Brain/engine/a.go",
+		"0_Brain/engine/b.go",
+		"0_Brain/engine/c.go",
+		"0_Brain/engine/d.go",
+		"0_Brain/engine/e.go",
+		"0_Brain/engine/a_test.go",
+		"0_Brain/engine/b_test.go",
+		"0_Brain/engine/c_test.go",
+		"0_Brain/engine/d_test.go",
+		"0_Brain/engine/e_test.go",
+		"0_Brain/engine/f_test.go",
+	}, 5)
+	if fail11.WithinBounds || fail11.PhysicalCount != 11 || fail11.EffectiveCount != 6 || fail11.ExemptTestCount != 5 {
+		t.Fatalf("5 productivos + 6 *_test.go debia fallar FTD: %+v", fail11)
+	}
+
+	// 4 productivos + 6 *_test.go hermanos = 10 fisicos, 5 exentos + 1 test extra contado 1:1 = 5 efectivos -> PASS
+	pass4plus6 := EvaluateFTDBounds([]string{
+		"0_Brain/engine/a.go",
+		"0_Brain/engine/b.go",
+		"0_Brain/engine/c.go",
+		"0_Brain/engine/d.go",
+		"0_Brain/engine/a_test.go",
+		"0_Brain/engine/b_test.go",
+		"0_Brain/engine/c_test.go",
+		"0_Brain/engine/d_test.go",
+		"0_Brain/engine/e_test.go",
+		"0_Brain/engine/f_test.go",
+	}, 5)
+	if !pass4plus6.WithinBounds || pass4plus6.PhysicalCount != 10 || pass4plus6.EffectiveCount != 5 || pass4plus6.ExemptTestCount != 5 {
+		t.Fatalf("4 productivos + 6 *_test.go hermanos debia contar el 6.o 1:1 (=5 efectivos, 10 fisicos) y pasar: %+v", pass4plus6)
+	}
+
+	// Test Go huerfano sin archivo productivo hermano en el mismo directorio -> 1:1 (5 + 1 = 6 -> FAIL)
+	orphanFail := EvaluateFTDBounds([]string{
+		"0_Brain/engine/a.go",
+		"0_Brain/engine/b.go",
+		"0_Brain/engine/c.go",
+		"0_Brain/engine/d.go",
+		"0_Brain/engine/e.go",
+		"0_Brain/other/orphan_test.go",
+	}, 5)
+	if orphanFail.WithinBounds || orphanFail.EffectiveCount != 6 || orphanFail.ExemptTestCount != 0 {
+		t.Fatalf("test Go huerfano debia contar 1:1 y fallar: %+v", orphanFail)
+	}
+
+	// Tests no-Go (Python/TS) siempre cuentan 1:1 -> 5 + 1 = 6 -> FAIL
+	nonGoFail := EvaluateFTDBounds([]string{
+		"app/a.py",
+		"app/b.py",
+		"app/c.py",
+		"app/d.py",
+		"app/e.py",
+		"app/test_a.py",
+	}, 5)
+	if nonGoFail.WithinBounds || nonGoFail.EffectiveCount != 6 || nonGoFail.ExemptTestCount != 0 {
+		t.Fatalf("test_a.py debia contar 1:1 y fallar: %+v", nonGoFail)
+	}
+
+	// Test Go en un segundo modulo raiz -> 2 modulos raiz -> FAIL
+	multiModFail := EvaluateFTDBounds([]string{
+		"0_Brain/engine/a.go",
+		"1_Intake/engine/a_test.go",
+	}, 5)
+	if multiModFail.WithinBounds || len(multiModFail.RootModules) != 2 {
+		t.Fatalf("test Go en segundo modulo raiz debia fallar: %+v", multiModFail)
+	}
+
+	// Archivo raiz "." + subdirectorio -> 2 modulos raiz -> FAIL
+	rootPlusSub := EvaluateFTDBounds([]string{
+		"README.md",
+		"pkg/bfcore/paths.go",
+	}, 5)
+	if rootPlusSub.WithinBounds || len(rootPlusSub.RootModules) != 2 {
+		t.Fatalf("archivo raiz + subdirectorio debia computar 2 modulos y fallar: %+v", rootPlusSub)
+	}
+}
+
+func TestSanitizeRelativePaths_OptionsAndSecurity(t *testing.T) {
+	repoRoot := `C:\Black Factory`
+
+	// nil/empty -> non-nil []string{}
+	if p, r := SanitizeRelativePaths(nil, repoRoot, PathSanitizeOpts{}); p == nil || len(p) != 0 || r != "" {
+		t.Fatalf("SanitizeRelativePaths(nil) = %#v, %q", p, r)
+	}
+
+	// SplitCommas: true omite entradas vacias (paridad 1_Intake)
+	if p, r := SanitizeRelativePaths([]string{" , ", "0_Brain/a.go, 0_Brain/A.go"}, repoRoot, PathSanitizeOpts{SplitCommas: true}); r != "" || len(p) != 2 {
+		t.Fatalf("SplitCommas:true sin FoldCaseDedupe inesperado: %#v %q", p, r)
+	}
+
+	// SplitCommas: false rechaza entradas vacias
+	if p, r := SanitizeRelativePaths([]string{"   "}, repoRoot, PathSanitizeOpts{SplitCommas: false}); p == nil || len(p) != 0 || r != "PATH_TRAVERSAL_OR_INVALID_SCOPE" {
+		t.Fatalf("SplitCommas:false debia rechazar entrada vacia: %#v %q", p, r)
+	}
+
+	// FoldCaseDedupe: true deduplica preservando capitalizacion original
+	if p, r := SanitizeRelativePaths([]string{"0_Brain/Engine/A.go", `0_brain\engine\a.go`}, repoRoot, PathSanitizeOpts{FoldCaseDedupe: true}); r != "" || len(p) != 1 || p[0] != "0_Brain/Engine/A.go" {
+		t.Fatalf("FoldCaseDedupe:true inesperado: %#v %q", p, r)
+	}
+
+	// AllowDir: true preserva '/' final y rechaza '.', './', '/', globs y rutas personales
+	if p, r := SanitizeRelativePaths([]string{`0_Brain\engine\`, `C:\Black Factory\1_Intake\engine/`}, repoRoot, PathSanitizeOpts{AllowDir: true, FoldCaseDedupe: true}); r != "" || len(p) != 2 || p[0] != "0_Brain/engine/" || p[1] != "1_Intake/engine/" {
+		t.Fatalf("AllowDir:true inesperado: %#v %q", p, r)
+	}
+	for _, badDir := range []string{".", "./", "/", `\`, "../", "0_Brain/engine//", "0_Brain/*.go", `C:\` + `Users\alice\dir/`} {
+		p, r := SanitizeRelativePaths([]string{badDir}, repoRoot, PathSanitizeOpts{AllowDir: true})
+		if p == nil || len(p) != 0 || r == "" {
+			t.Fatalf("AllowDir:true debia rechazar %q, obtuvo %#v %q", badDir, p, r)
+		}
+	}
+
+	// AllowDir: false rechaza '/' final
+	if p, r := SanitizeRelativePaths([]string{"0_Brain/engine/"}, repoRoot, PathSanitizeOpts{AllowDir: false}); p == nil || len(p) != 0 || r != "PATH_TRAVERSAL_OR_INVALID_SCOPE" {
+		t.Fatalf("AllowDir:false debia rechazar directorio: %#v %q", p, r)
+	}
+
+	// Rutas personales G4 rechazadas ANTES de recortar repoRoot
+	if p, r := SanitizeRelativePaths([]string{`C:\` + `Users\alice\repo\a.go`}, `C:\`+`Users\alice\repo`, PathSanitizeOpts{}); p == nil || len(p) != 0 || r != "G4_personal_path_in_affected_paths" {
+		t.Fatalf("G4 debia evaluarse antes de recortar repoRoot: %#v %q", p, r)
+	}
+}
+
+func TestCheckNoReparseUpToNearestExisting(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "exist")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedMissing := filepath.Join(existing, "not", "created", "yet")
+	if err := CheckNoReparseUpToNearestExisting(root, nestedMissing); err != nil {
+		t.Fatalf("CheckNoReparseUpToNearestExisting con root fallo: %v", err)
+	}
+	if err := CheckNoReparseUpToNearestExisting("", nestedMissing); err != nil {
+		t.Fatalf("CheckNoReparseUpToNearestExisting con root vacio fallo: %v", err)
+	}
+	if err := CheckNoReparseUpToNearestExisting(root, "   "); err == nil {
+		t.Fatalf("CheckNoReparseUpToNearestExisting con target vacio debia fallar")
+	}
+}
+
+func TestComputeNormalizedFileSHA256(t *testing.T) {
+	if MaxObservedFileBytes != 10<<20 {
+		t.Fatalf("MaxObservedFileBytes = %d, esperaba 10 MiB", MaxObservedFileBytes)
+	}
+	repoRoot := t.TempDir()
+	subDir := filepath.Join(repoRoot, "pkg")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	lfBytes := []byte("line1\nline2\nline3\n")
+	crlfBytes := []byte("line1\r\nline2\r\nline3\r\n")
+	crBytes := []byte("line1\rline2\rline3\r")
+	bomCRLFBytes := append([]byte{0xef, 0xbb, 0xbf}, crlfBytes...)
+
+	wantSum := sha256.Sum256(lfBytes)
+	wantHex := hex.EncodeToString(wantSum[:])
+
+	files := map[string][]byte{
+		"pkg/lf.txt":       lfBytes,
+		"pkg/crlf.txt":     crlfBytes,
+		"pkg/cr.txt":       crBytes,
+		"pkg/bom_crlf.txt": bomCRLFBytes,
+	}
+	for rel, content := range files {
+		if err := os.WriteFile(filepath.Join(repoRoot, filepath.FromSlash(rel)), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		state, sum, err := ComputeNormalizedFileSHA256(repoRoot, rel)
+		if err != nil || state != "present" || sum != wantHex {
+			t.Fatalf("ComputeNormalizedFileSHA256(%s) = (%q, %q, %v), esperaba (present, %s, nil)", rel, state, sum, err, wantHex)
+		}
+	}
+
+	// Limite de bloque de streaming (32 KiB) con \r\n atravesando el corte del buffer
+	bigLF := bytes.Repeat([]byte("a"), 32767)
+	bigLF = append(bigLF, '\n')
+	bigLF = append(bigLF, bytes.Repeat([]byte("b"), 40000)...)
+	bigLF = append(bigLF, '\n')
+	bigCRLF := bytes.ReplaceAll(bigLF, []byte("\n"), []byte("\r\n"))
+	bigWant := sha256.Sum256(bigLF)
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "big.txt"), bigCRLF, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, sum, err := ComputeNormalizedFileSHA256(repoRoot, "pkg/big.txt")
+	if err != nil || state != "present" || sum != hex.EncodeToString(bigWant[:]) {
+		t.Fatalf("streaming CRLF en limite de buffer fallo: state=%q sum=%q err=%v", state, sum, err)
+	}
+
+	// Archivo inexistente -> ("absent", "", nil)
+	state, sum, err = ComputeNormalizedFileSHA256(repoRoot, "pkg/missing.go")
+	if err != nil || state != "absent" || sum != "" {
+		t.Fatalf("archivo inexistente debia retornar (absent, \"\", nil), obtuvo (%q, %q, %v)", state, sum, err)
+	}
+
+	// Directorio -> error
+	if _, _, err := ComputeNormalizedFileSHA256(repoRoot, "pkg"); err == nil {
+		t.Fatalf("ComputeNormalizedFileSHA256 sobre directorio debia fallar")
+	}
+
+	// Traversal ../ fuera de repoRoot -> error antes de Lstat
+	if _, _, err := ComputeNormalizedFileSHA256(repoRoot, "../outside.go"); err == nil {
+		t.Fatalf("ComputeNormalizedFileSHA256 con traversal ../ debia fallar")
+	}
+	if _, _, err := ComputeNormalizedFileSHA256(repoRoot, "pkg/dir/"); err == nil {
+		t.Fatalf("ComputeNormalizedFileSHA256 con sufijo / debia fallar")
+	}
+	if _, _, err := ComputeNormalizedFileSHA256("", "pkg/lf.txt"); err == nil {
+		t.Fatalf("ComputeNormalizedFileSHA256 con repoRoot vacio debia fallar")
+	}
+}
+
+func TestBrainClient_PreflightMultiWrap_AndSharedHelpers(t *testing.T) {
+	// RiskLevelRank
+	cases := map[string]int{"NONE": 0, "BAJO": 1, "medio": 2, "ALTO": 3, "CRITICO": 4, "desconocido": 0}
+	for lvl, want := range cases {
+		if got := RiskLevelRank(lvl); got != want {
+			t.Fatalf("RiskLevelRank(%q) = %d, esperaba %d", lvl, got, want)
+		}
+	}
+
+	// FindUncoveredPaths
+	docs := []BrainDocMatch{
+		{ID: "d1", Type: "wiki", Status: "active", MatchedPaths: []string{"0_Brain/engine/a.go"}},
+		{ID: "d2", Type: "adr", Status: "active", CoversPaths: []string{"pkg/bfcore/"}},
+		{ID: "d3", Type: "wiki", Status: "draft", CoversPaths: []string{"2_Spec_Writer/"}},
+		{ID: "d4", Type: "project", Status: "active", CoversPaths: []string{"2_Spec_Writer/"}},
+	}
+	uncov := FindUncoveredPaths([]string{"0_Brain/engine/a.go", "pkg/bfcore/ftd.go", "2_Spec_Writer/main.go"}, docs)
+	if len(uncov) != 1 || uncov[0] != "2_Spec_Writer/main.go" {
+		t.Fatalf("FindUncoveredPaths = %v, esperaba [2_Spec_Writer/main.go]", uncov)
+	}
+
+	// SubprocessBrainClient.Preflight multi-wrap
+	vaultDir := t.TempDir()
+	dbPath := filepath.Join(vaultDir, ".index", "brain.db")
+	client := NewSubprocessBrainClient(filepath.Join(vaultDir, "missing_brain.exe"), 0)
+
+	if _, err := client.Preflight("", ""); !errors.Is(err, ErrBrainUnavailable) || errors.Is(err, ErrBrainIndexMissing) || errors.Is(err, ErrBrainJournalActive) {
+		t.Fatalf("Preflight con vault vacio debia ser solo ErrBrainUnavailable: %v", err)
+	}
+
+	// 1. Falta brain.db -> ErrBrainIndexMissing Y ErrBrainUnavailable, NO ErrBrainJournalActive
+	if _, err := client.Preflight(vaultDir, ""); err == nil {
+		t.Fatalf("Preflight sin brain.db debia fallar")
+	} else if !errors.Is(err, ErrBrainIndexMissing) || !errors.Is(err, ErrBrainUnavailable) || errors.Is(err, ErrBrainJournalActive) {
+		t.Fatalf("Preflight sin brain.db violo contrato multi-wrap: %v", err)
+	}
+
+	// 2. dbPath es un directorio -> ErrBrainUnavailable
+	if err := os.MkdirAll(dbPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Preflight(vaultDir, dbPath); !errors.Is(err, ErrBrainUnavailable) {
+		t.Fatalf("Preflight con dbPath directorio debia retornar ErrBrainUnavailable: %v", err)
+	}
+	_ = os.RemoveAll(dbPath)
+
+	// 3. Archivo regular brain.db limpio -> OK
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("sqlite-mock"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pf, err := client.Preflight(vaultDir, "")
+	if err != nil || pf.DBPath != dbPath || pf.BrainDBMTime == "" {
+		t.Fatalf("Preflight limpio fallo: pf=%+v err=%v", pf, err)
+	}
+
+	// 4. Presente .brain-journal.json -> ErrBrainJournalActive Y ErrBrainUnavailable, NO ErrBrainIndexMissing
+	journalPath := filepath.Join(vaultDir, ".brain-journal.json")
+	if err := os.WriteFile(journalPath, []byte(`{"proposal_id":"p1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Preflight(vaultDir, dbPath); err == nil {
+		t.Fatalf("Preflight con .brain-journal.json debia fallar")
+	} else if !errors.Is(err, ErrBrainJournalActive) || !errors.Is(err, ErrBrainUnavailable) || errors.Is(err, ErrBrainIndexMissing) {
+		t.Fatalf("Preflight con .brain-journal.json violo contrato multi-wrap: %v", err)
+	}
+
+	// 5. Context y ExecBrain con binario faltante -> ErrBrainUnavailable
+	if _, inv, err := client.Context(vaultDir, dbPath, "black-factory", []string{"a.go"}); !errors.Is(err, ErrBrainUnavailable) || inv.ExitCode != -1 {
+		t.Fatalf("Context con binario ausente debia retornar ErrBrainUnavailable y ExitCode=-1: inv=%+v err=%v", inv, err)
+	}
+
+	// 6. Subproceso real si 0_Brain/brain.exe y 0_Brain/vault/.index/brain.db existen en el repo local
+	realBrainBin := filepath.Clean(filepath.Join("..", "..", "0_Brain", "brain.exe"))
+	realVault := filepath.Clean(filepath.Join("..", "..", "0_Brain", "vault"))
+	if _, err := os.Stat(realBrainBin); err == nil {
+		if _, errV := os.Stat(filepath.Join(realVault, ".index", "brain.db")); errV == nil {
+			realClient := NewSubprocessBrainClient(realBrainBin, 5*time.Second)
+			pfReal, err := realClient.Preflight(realVault, "")
+			if err != nil {
+				t.Fatalf("realClient.Preflight fallo: %v", err)
+			}
+			ctxResp, inv, err := realClient.Context(realVault, pfReal.DBPath, "black-factory", []string{"gengiswap/engine/ring.go"})
+			if err != nil || inv.ExitCode != 0 || !ctxResp.HasActiveRiskZones || len(ctxResp.RiskHits) == 0 {
+				t.Fatalf("realClient.Context fallo: err=%v inv=%+v resp=%+v", err, inv, ctxResp)
+			}
+		}
 	}
 }

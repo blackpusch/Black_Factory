@@ -2,12 +2,9 @@ package intake
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,27 +17,17 @@ import (
 )
 
 var (
-	// ErrBrainUnavailable indica que 0_Brain no esta disponible, tiene un journal pendiente o fallo al ejecutarse (Exit code 4).
-	ErrBrainUnavailable = errors.New("0_Brain no disponible o preflight fallido")
-	// ErrBrainIndexMissing indica que .index/brain.db no existe en la boveda (envuelto en ErrBrainUnavailable -> Exit code 4).
-	ErrBrainIndexMissing = fmt.Errorf("%w: indice .index/brain.db ausente", ErrBrainUnavailable)
+	// ErrBrainUnavailable reexporta bfcore.ErrBrainUnavailable (Exit code 4 en 1_Intake).
+	ErrBrainUnavailable = bfcore.ErrBrainUnavailable
+	// ErrBrainIndexMissing reexporta bfcore.ErrBrainIndexMissing (Exit code 4 en 1_Intake).
+	ErrBrainIndexMissing = bfcore.ErrBrainIndexMissing
 )
 
-// BrainPreflight contiene los metadatos de verificacion read-only de la boveda 0_Brain.
-type BrainPreflight struct {
-	VaultRoot    string
-	DBPath       string
-	BrainDBMTime string
-}
+// BrainPreflight reexporta bfcore.BrainPreflight para el paquete intake.
+type BrainPreflight = bfcore.BrainPreflight
 
-// BrainContextResponse agrupa la respuesta estructurada de 0_Brain/brain.exe context --json.
-type BrainContextResponse struct {
-	MatchedDocs         []BrainDocMatch
-	RiskHits            []RiskHit
-	RiskZonesSHA256     string
-	RiskZonesParseError string
-	HasActiveRiskZones  bool
-}
+// BrainContextResponse reexporta bfcore.BrainContextResponse para el paquete intake.
+type BrainContextResponse = bfcore.BrainContextResponse
 
 // BrainQueryOpts parametriza una consulta a 0_Brain/brain.exe query --json.
 type BrainQueryOpts struct {
@@ -50,138 +37,31 @@ type BrainQueryOpts struct {
 	Limit   int
 }
 
-// BrainClient abstrae la comunicacion de solo lectura con 0_Brain (CLI subprocess en v1; MCP en Fase 2).
+// BrainClient abstrae la comunicacion de solo lectura con 0_Brain embebiendo bfcore.BrainClient
+// y anadiendo Query para busqueda FTS5 especifica de triaje.
 type BrainClient interface {
-	Preflight(vaultRoot, dbPath string) (BrainPreflight, error)
-	Context(vaultRoot, dbPath, project string, files []string) (BrainContextResponse, BrainInvocation, error)
+	bfcore.BrainClient
 	Query(vaultRoot, dbPath string, opts BrainQueryOpts) ([]BrainDocMatch, BrainInvocation, error)
 }
 
-// SubprocessBrainClient implementa BrainClient invocando 0_Brain/brain.exe como subproceso.
+// SubprocessBrainClient envuelve *bfcore.SubprocessBrainClient en un struct local para
+// implementar el metodo Query exclusivo de 1_Intake reutilizando ExecBrain.
 type SubprocessBrainClient struct {
-	BrainBin string
-	Timeout  time.Duration
+	*bfcore.SubprocessBrainClient
 }
 
 // NewSubprocessBrainClient construye un SubprocessBrainClient con timeout por defecto de 5s.
 func NewSubprocessBrainClient(brainBin string, timeout time.Duration) *SubprocessBrainClient {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
 	return &SubprocessBrainClient{
-		BrainBin: brainBin,
-		Timeout:  timeout,
+		SubprocessBrainClient: bfcore.NewSubprocessBrainClient(brainBin, timeout),
 	}
-}
-
-// Preflight ejecuta la verificacion estrictamente de solo lectura (NG2) sobre vaultRoot y dbPath:
-//  1. Verifica bfcore.CheckNoReparseChain sobre vaultRoot y dbPath.
-//  2. Comprueba os.Lstat sobre dbPath (.index/brain.db). Si falta, devuelve ErrBrainIndexMissing (ErrBrainUnavailable).
-//  3. Comprueba os.Lstat sobre <vaultRoot>/.brain-journal.json. Si existe, devuelve inmediatamente ErrBrainUnavailable
-//     sin invocar brain.exe verify (evitando disparar RecoverJournal que mutaria la boveda).
-func (c *SubprocessBrainClient) Preflight(vaultRoot, dbPath string) (BrainPreflight, error) {
-	if strings.TrimSpace(vaultRoot) == "" {
-		return BrainPreflight{}, fmt.Errorf("%w: ruta de boveda vacia", ErrBrainUnavailable)
-	}
-	if strings.TrimSpace(dbPath) == "" {
-		dbPath = filepath.Join(vaultRoot, ".index", "brain.db")
-	}
-
-	if err := bfcore.CheckNoReparseChain("", vaultRoot); err != nil {
-		return BrainPreflight{}, fmt.Errorf("%w: reparse point en boveda: %v", ErrBrainUnavailable, err)
-	}
-	if err := bfcore.CheckNoReparseChain(vaultRoot, dbPath); err != nil {
-		return BrainPreflight{}, fmt.Errorf("%w: reparse point en brain.db: %v", ErrBrainUnavailable, err)
-	}
-
-	fiDB, err := os.Lstat(dbPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return BrainPreflight{}, fmt.Errorf("%w: %s (ejecute '0_Brain/brain.exe index')", ErrBrainIndexMissing, dbPath)
-		}
-		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %v", ErrBrainUnavailable, dbPath, err)
-	}
-	if fiDB.IsDir() || bfcore.IsReparseOrSymlink(fiDB) {
-		return BrainPreflight{}, fmt.Errorf("%w: %s no es un archivo regular", ErrBrainUnavailable, dbPath)
-	}
-
-	journalPath := filepath.Join(vaultRoot, ".brain-journal.json")
-	if _, jErr := os.Lstat(journalPath); jErr == nil {
-		return BrainPreflight{}, fmt.Errorf("%w: diario pendiente %s detectado (NG2 read-only: ejecute '0_Brain/brain.exe verify' manualmente)", ErrBrainUnavailable, journalPath)
-	} else if !errors.Is(jErr, os.ErrNotExist) {
-		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %v", ErrBrainUnavailable, journalPath, jErr)
-	}
-
-	return BrainPreflight{
-		VaultRoot:    vaultRoot,
-		DBPath:       dbPath,
-		BrainDBMTime: fiDB.ModTime().UTC().Format(time.RFC3339),
-	}, nil
-}
-
-// Context invoca 0_Brain/brain.exe context --vault <v> --db <db> --project <p> --files <csv> --json
-// y extrae los documentos activos junto con los risk_hits estructurados de wiki/risk_zones.md.
-func (c *SubprocessBrainClient) Context(vaultRoot, dbPath, project string, files []string) (BrainContextResponse, BrainInvocation, error) {
-	if strings.TrimSpace(dbPath) == "" {
-		dbPath = filepath.Join(vaultRoot, ".index", "brain.db")
-	}
-	csvFiles := strings.Join(files, ",")
-	args := []string{"context", "--vault", vaultRoot, "--db", dbPath}
-	if strings.TrimSpace(project) != "" {
-		args = append(args, "--project", strings.TrimSpace(project))
-	}
-	if csvFiles != "" {
-		args = append(args, "--files", csvFiles)
-	}
-	args = append(args, "--json")
-
-	outBytes, inv, err := c.execBrain(args)
-	if err != nil {
-		return BrainContextResponse{}, inv, err
-	}
-
-	var docs []BrainDocMatch
-	trimmed := bytes.TrimSpace(outBytes)
-	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
-		if err := json.Unmarshal(trimmed, &docs); err != nil {
-			return BrainContextResponse{}, inv, fmt.Errorf("%w: decodificando salida de brain context: %v", ErrBrainUnavailable, err)
-		}
-	}
-	if docs == nil {
-		docs = []BrainDocMatch{}
-	}
-	inv.ResultCount = len(docs)
-
-	resp := BrainContextResponse{
-		MatchedDocs: make([]BrainDocMatch, 0, len(docs)),
-		RiskHits:    []RiskHit{},
-	}
-	for _, d := range docs {
-		if !strings.EqualFold(d.Status, "active") {
-			continue
-		}
-		if strings.EqualFold(d.Type, "risk_zones") {
-			resp.HasActiveRiskZones = true
-			if d.RiskZonesSHA256 != "" {
-				resp.RiskZonesSHA256 = d.RiskZonesSHA256
-			}
-			if d.RiskZonesParseError != "" {
-				resp.RiskZonesParseError = d.RiskZonesParseError
-			}
-			if len(d.RiskHits) > 0 {
-				resp.RiskHits = append(resp.RiskHits, d.RiskHits...)
-			}
-		}
-		d.RiskHits = nil
-		d.RiskZonesSHA256 = ""
-		d.RiskZonesParseError = ""
-		resp.MatchedDocs = append(resp.MatchedDocs, d)
-	}
-	return resp, inv, nil
 }
 
 // Query invoca 0_Brain/brain.exe query --vault <v> --db <db> [--project <p>] [--type <t>] [--limit <n>] [--q <q>] --json.
 func (c *SubprocessBrainClient) Query(vaultRoot, dbPath string, opts BrainQueryOpts) ([]BrainDocMatch, BrainInvocation, error) {
+	if c == nil || c.SubprocessBrainClient == nil {
+		return nil, BrainInvocation{ExitCode: -1}, fmt.Errorf("%w: cliente brain nil", ErrBrainUnavailable)
+	}
 	if strings.TrimSpace(dbPath) == "" {
 		dbPath = filepath.Join(vaultRoot, ".index", "brain.db")
 	}
@@ -200,7 +80,7 @@ func (c *SubprocessBrainClient) Query(vaultRoot, dbPath string, opts BrainQueryO
 	}
 	args = append(args, "--json")
 
-	outBytes, inv, err := c.execBrain(args)
+	outBytes, inv, err := c.ExecBrain(args)
 	if err != nil {
 		return nil, inv, err
 	}
@@ -217,60 +97,6 @@ func (c *SubprocessBrainClient) Query(vaultRoot, dbPath string, opts BrainQueryO
 	}
 	inv.ResultCount = len(docs)
 	return docs, inv, nil
-}
-
-func (c *SubprocessBrainClient) execBrain(args []string) ([]byte, BrainInvocation, error) {
-	bin := strings.TrimSpace(c.BrainBin)
-	if bin == "" {
-		bin = filepath.Join("0_Brain", "brain.exe")
-	}
-	cmdStr := formatCommandDisplay(bin, args)
-	cmdStr, _ = bfcore.RedactTier2Text("command", cmdStr)
-	if _, err := os.Stat(bin); err != nil {
-		return nil, BrainInvocation{Command: cmdStr, ExitCode: -1}, fmt.Errorf("%w: binario brain.exe no encontrado en %s: %v", ErrBrainUnavailable, bin, err)
-	}
-
-	timeout := c.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	dur := time.Since(start).Milliseconds()
-
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-		inv := BrainInvocation{Command: cmdStr, ExitCode: exitCode, DurationMs: dur}
-		return nil, inv, fmt.Errorf("%w: comando %q fallo (exit=%d): %v (%s)", ErrBrainUnavailable, cmdStr, exitCode, err, strings.TrimSpace(stderr.String()))
-	}
-
-	return stdout.Bytes(), BrainInvocation{Command: cmdStr, ExitCode: 0, DurationMs: dur}, nil
-}
-
-func formatCommandDisplay(bin string, args []string) string {
-	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, filepath.ToSlash(bin))
-	for _, a := range args {
-		if strings.ContainsAny(a, " \t\"") {
-			parts = append(parts, fmt.Sprintf("%q", a))
-		} else {
-			parts = append(parts, filepath.ToSlash(a))
-		}
-	}
-	return strings.Join(parts, " ")
 }
 
 var (

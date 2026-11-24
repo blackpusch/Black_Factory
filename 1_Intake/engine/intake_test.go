@@ -938,3 +938,134 @@ func (v *verifyMockBrainClient) Query(vaultRoot, dbPath string, opts BrainQueryO
 	return []BrainDocMatch{}, BrainInvocation{Command: "brain query", ExitCode: 0}, nil
 }
 
+func TestTriageWorkItem_Option5B_GoSiblingTests(t *testing.T) {
+	if !errors.Is(ErrBrainUnavailable, bfcore.ErrBrainUnavailable) || !errors.Is(ErrBrainIndexMissing, bfcore.ErrBrainIndexMissing) {
+		t.Fatalf("re-exportaciones ErrBrain* deben coincidir con bfcore")
+	}
+	if DefaultMaxFTDFiles != bfcore.DefaultMaxFTDFiles {
+		t.Fatalf("DefaultMaxFTDFiles = %d, esperaba %d", DefaultMaxFTDFiles, bfcore.DefaultMaxFTDFiles)
+	}
+
+	ctxCovered := BrainContextResponse{
+		HasActiveRiskZones: true,
+		RiskZonesSHA256:    strings.Repeat("c", 64),
+		MatchedDocs: []BrainDocMatch{
+			{ID: "wiki-brain", RelPath: "wiki/brain.md", Type: "wiki", Status: "active", CoversPaths: []string{"0_Brain/", "1_Intake/"}},
+		},
+	}
+
+	// 5 productivos + 2 *_test.go hermanos -> FTD
+	wi5plus2 := &WorkItem{
+		Project: "black-factory",
+		Kind:    "bug",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.go",
+			"0_Brain/engine/b.go",
+			"0_Brain/engine/c.go",
+			"0_Brain/engine/d.go",
+			"0_Brain/engine/e.go",
+			"0_Brain/engine/a_test.go",
+			"0_Brain/engine/b_test.go",
+		},
+	}
+	TriageWorkItem(wi5plus2, ctxCovered, 5)
+	if wi5plus2.Lane != "FTD" {
+		t.Fatalf("5 productivos + 2 *_test.go hermanos debia enrutar a FTD, obtuvo %s (%+v)", wi5plus2.Lane, wi5plus2.TriageReasons)
+	}
+
+	// 5 productivos + 5 *_test.go hermanos (10 fisicos) -> FTD
+	wi5plus5 := &WorkItem{
+		Project: "black-factory",
+		Kind:    "refactor",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.go",
+			"0_Brain/engine/b.go",
+			"0_Brain/engine/c.go",
+			"0_Brain/engine/d.go",
+			"0_Brain/engine/e.go",
+			"0_Brain/engine/a_test.go",
+			"0_Brain/engine/b_test.go",
+			"0_Brain/engine/c_test.go",
+			"0_Brain/engine/d_test.go",
+			"0_Brain/engine/e_test.go",
+		},
+	}
+	TriageWorkItem(wi5plus5, ctxCovered, 5)
+	if wi5plus5.Lane != "FTD" {
+		t.Fatalf("5 productivos + 5 *_test.go hermanos debia enrutar a FTD, obtuvo %s (%+v)", wi5plus5.Lane, wi5plus5.TriageReasons)
+	}
+
+	// 5 productivos + 6 *_test.go hermanos (11 fisicos) -> ASDD (MULTI_MODULE_OR_FILE_THRESHOLD)
+	wi5plus6 := &WorkItem{
+		Project: "black-factory",
+		Kind:    "bug",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.go",
+			"0_Brain/engine/b.go",
+			"0_Brain/engine/c.go",
+			"0_Brain/engine/d.go",
+			"0_Brain/engine/e.go",
+			"0_Brain/engine/a_test.go",
+			"0_Brain/engine/b_test.go",
+			"0_Brain/engine/c_test.go",
+			"0_Brain/engine/d_test.go",
+			"0_Brain/engine/e_test.go",
+			"0_Brain/engine/f_test.go",
+		},
+	}
+	TriageWorkItem(wi5plus6, ctxCovered, 5)
+	if wi5plus6.Lane != "ASDD" || len(wi5plus6.TriageReasons) == 0 || wi5plus6.TriageReasons[0].Code != "MULTI_MODULE_OR_FILE_THRESHOLD" {
+		t.Fatalf("5 productivos + 6 *_test.go debia escalar a ASDD con MULTI_MODULE_OR_FILE_THRESHOLD, obtuvo %s (%+v)", wi5plus6.Lane, wi5plus6.TriageReasons)
+	}
+
+	// Test Go huerfano (sin archivo productivo en el mismo directorio) -> 1:1 -> ASDD
+	wiOrphan := &WorkItem{
+		Project: "black-factory",
+		Kind:    "bug",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.go",
+			"0_Brain/engine/b.go",
+			"0_Brain/engine/c.go",
+			"0_Brain/engine/d.go",
+			"0_Brain/engine/e.go",
+			"0_Brain/sub/orphan_test.go",
+		},
+	}
+	TriageWorkItem(wiOrphan, ctxCovered, 5)
+	if wiOrphan.Lane != "ASDD" {
+		t.Fatalf("test Go huerfano debia contar 1:1 y escalar a ASDD, obtuvo %s", wiOrphan.Lane)
+	}
+
+	// test_app.py cuenta 1:1 -> ASDD
+	wiPy := &WorkItem{
+		Project: "black-factory",
+		Kind:    "bug",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.py",
+			"0_Brain/engine/b.py",
+			"0_Brain/engine/c.py",
+			"0_Brain/engine/d.py",
+			"0_Brain/engine/e.py",
+			"0_Brain/engine/test_app.py",
+		},
+	}
+	TriageWorkItem(wiPy, ctxCovered, 5)
+	if wiPy.Lane != "ASDD" {
+		t.Fatalf("test_app.py debia contar 1:1 y escalar a ASDD, obtuvo %s", wiPy.Lane)
+	}
+
+	// Test Go en segundo modulo raiz -> ASDD
+	wiTwoMods := &WorkItem{
+		Project: "black-factory",
+		Kind:    "bug",
+		AffectedPaths: []string{
+			"0_Brain/engine/a.go",
+			"1_Intake/engine/a_test.go",
+		},
+	}
+	TriageWorkItem(wiTwoMods, ctxCovered, 5)
+	if wiTwoMods.Lane != "ASDD" {
+		t.Fatalf("test Go en segundo modulo raiz debia escalar a ASDD, obtuvo %s", wiTwoMods.Lane)
+	}
+}
+
