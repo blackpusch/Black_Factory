@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blackfactory.local/schemas/bounce_order.schema.json",
+  "title": "Black Factory BounceOrder v1.0",
+  "description": "Consolidated decision order emitted by 5_Cycle_Approver and consumed by 3_Builder (builder.exe apply-order).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "order_id",
+    "created_at",
+    "trace_id",
+    "task_id",
+    "chunk_id",
+    "bundle_id",
+    "bundle_sha256",
+    "decision",
+    "reviewer_verdicts",
+    "requires_red_test",
+    "remediation_items",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "order_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "APPROVE",
+        "BOUNCE"
+      ]
+    },
+    "reviewer_verdicts": {
+      "$ref": "#/$defs/reviewer_verdicts"
+    },
+    "requires_red_test": {
+      "type": "boolean"
+    },
+    "remediation_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/remediation_item"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\r\\n\"\\\\`$%]+$"
+    }
+  },
+  "if": {
+    "properties": {
+      "decision": {
+        "const": "APPROVE"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "requires_red_test": {
+        "const": false
+      },
+      "remediation_items": {
+        "maxItems": 0
+      },
+      "reviewer_verdicts": {
+        "type": "object",
+        "properties": {
+          "security": {
+            "properties": {
+              "status": {
+                "const": "PASS"
+              },
+              "findings_count": {
+                "const": 0
+              }
+            }
+          },
+          "code_architecture": {
+            "properties": {
+              "status": {
+                "const": "PASS"
+              },
+              "findings_count": {
+                "const": 0
+              }
+            }
+          },
+          "ux": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "PASS",
+                  "NA"
+                ]
+              },
+              "findings_count": {
+                "const": 0
+              }
+            }
+          },
+          "ui": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "PASS",
+                  "NA"
+                ]
+              },
+              "findings_count": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "remediation_items": {
+        "minItems": 1
+      }
+    }
+  },
+  "$defs": {
+    "axis_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "findings_count",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NA"
+          ]
+        },
+        "findings_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "na_reason": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        }
+      }
+    },
+    "reviewer_verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "code_architecture",
+        "ux",
+        "ui"
+      ],
+      "properties": {
+        "security": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/axis_verdict"
+            },
+            {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "code_architecture": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/axis_verdict"
+            },
+            {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "ux": {
+          "$ref": "#/$defs/axis_verdict"
+        },
+        "ui": {
+          "$ref": "#/$defs/axis_verdict"
+        }
+      }
+    },
+    "remediation_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "axis",
+        "severity",
+        "file",
+        "line",
+        "description",
+        "required_action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "axis": {
+          "type": "string",
+          "enum": [
+            "security",
+            "ux",
+            "ui",
+            "code_architecture"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "BLOCKER",
+            "MAJOR",
+            "MINOR"
+          ]
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "required_action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    }
+  }
+}

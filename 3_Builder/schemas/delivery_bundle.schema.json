@@ -1,0 +1,505 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blackfactory.local/schemas/delivery_bundle.schema.json",
+  "title": "Black Factory DeliveryBundle v1.0",
+  "description": "Immutable delivery manifest emitted by 3_Builder (builder.exe package) for 4_Revisores.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "created_at",
+    "trace_id",
+    "work_item_id",
+    "spec_sha256",
+    "lane",
+    "task_id",
+    "chunk_id",
+    "gengis_attempt",
+    "reset_epoch",
+    "bounce_cycle",
+    "git",
+    "scope",
+    "brain_context",
+    "tdd_evidence",
+    "reviewer_applicability",
+    "previous_bounces"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^BND-[a-z0-9][a-z0-9_-]{2,63}-.+?-a[1-9][0-9]*-r[0-9]+-c[0-3]$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "work_item_id": {
+      "type": "string",
+      "pattern": "^($|WI-[0-9a-f]{12})$"
+    },
+    "spec_sha256": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$"
+    },
+    "lane": {
+      "type": "string",
+      "enum": [
+        "FTD",
+        "ASDD",
+        ""
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gengis_attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reset_epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bounce_cycle": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "git": {
+      "$ref": "#/$defs/git_bundle_info"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope_info"
+    },
+    "brain_context": {
+      "$ref": "#/$defs/bundle_brain_info"
+    },
+    "tdd_evidence": {
+      "$ref": "#/$defs/tdd_evidence"
+    },
+    "reviewer_applicability": {
+      "$ref": "#/$defs/reviewer_applicability"
+    },
+    "previous_bounces": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "changed_file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status",
+        "mode",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^(0644|0755|0000)$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{64}|DELETED)$"
+        }
+      }
+    },
+    "git_bundle_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_branch",
+        "build_branch",
+        "base_ref",
+        "worktree_tree_sha256",
+        "changed_files",
+        "diff_rel_path",
+        "diff_sha256",
+        "diff_bytes"
+      ],
+      "properties": {
+        "target_branch": {
+          "type": "string"
+        },
+        "build_branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_ref": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "worktree_tree_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "changed_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/changed_file_entry"
+          }
+        },
+        "diff_rel_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "diff_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "diff_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2097152
+        }
+      }
+    },
+    "scope_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "can_modify",
+        "read_only",
+        "forbidden"
+      ],
+      "properties": {
+        "can_modify": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "read_only": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "brain_doc_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rel_path",
+        "type",
+        "status",
+        "verified_head"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "rel_path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "verified_head": {
+          "type": "string"
+        }
+      }
+    },
+    "risk_hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "project",
+        "level",
+        "matched_paths",
+        "mandatory_gate"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "matched_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mandatory_gate": {
+          "type": "string"
+        }
+      }
+    },
+    "bundle_brain_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "brain_db_mtime",
+        "risk_zones_sha256",
+        "highest_risk_level",
+        "matched_docs",
+        "risk_hits"
+      ],
+      "properties": {
+        "brain_db_mtime": {
+          "type": "string"
+        },
+        "risk_zones_sha256": {
+          "type": "string"
+        },
+        "highest_risk_level": {
+          "type": "string",
+          "enum": [
+            "NONE",
+            "BAJO",
+            "MEDIO",
+            "ALTO",
+            "CRITICO"
+          ]
+        },
+        "matched_docs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/brain_doc_summary"
+          }
+        },
+        "risk_hits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/risk_hit"
+          }
+        }
+      }
+    },
+    "red_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chunk_id",
+        "gengis_attempt",
+        "bounce_cycle",
+        "inherited_from_cycle",
+        "cmd_index",
+        "command",
+        "exit_code",
+        "duration_ms",
+        "output_excerpt",
+        "truncated",
+        "red_worktree_tree_sha256",
+        "has_test_file",
+        "recorded_at"
+      ],
+      "properties": {
+        "chunk_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gengis_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "bounce_cycle": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "inherited_from_cycle": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "cmd_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_code": {
+          "type": "integer",
+          "not": {
+            "const": 0
+          }
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_excerpt": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "red_worktree_tree_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "has_test_file": {
+          "type": "boolean"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "command_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cmd_index",
+        "command",
+        "exit_code",
+        "duration_ms",
+        "output_excerpt",
+        "truncated"
+      ],
+      "properties": {
+        "cmd_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_code": {
+          "type": "integer",
+          "const": 0
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_excerpt": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "tdd_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "red",
+        "green"
+      ],
+      "properties": {
+        "red": {
+          "$ref": "#/$defs/red_evidence"
+        },
+        "green": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/command_evidence"
+          }
+        }
+      }
+    },
+    "axis_applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applicable",
+        "mode",
+        "reason",
+        "profile_role"
+      ],
+      "properties": {
+        "applicable": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "always",
+            "auto",
+            "included"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile_role": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reviewer_applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "code_architecture",
+        "ux",
+        "ui"
+      ],
+      "properties": {
+        "security": {
+          "$ref": "#/$defs/axis_applicability"
+        },
+        "code_architecture": {
+          "$ref": "#/$defs/axis_applicability"
+        },
+        "ux": {
+          "$ref": "#/$defs/axis_applicability"
+        },
+        "ui": {
+          "$ref": "#/$defs/axis_applicability"
+        }
+      }
+    }
+  }
+}
