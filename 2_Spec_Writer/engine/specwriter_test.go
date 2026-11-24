@@ -2,6 +2,7 @@ package specwriter
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1707,4 +1708,255 @@ func TestCoverage_DeepValidationCompileAndHelpers(t *testing.T) {
 		t.Fatalf("Compile con spec_context corrupto debia retornar 6 ARTIFACT_STATE_CORRUPT: %d %+v", code, res)
 	}
 	_ = os.WriteFile(filepath.Join(wiDir2, "spec_context.json"), origCtx2, 0o644)
+}
+
+func TestGoldfishSecurityRegressions_BOM_Parens_ExpectOutput_TargetRepo_G4Key(t *testing.T) {
+	f := newTestFixtureEnv(t, "FTD", "bug", "NONE", []string{"0_Brain/engine/a.go"}, nil, nil)
+	prep := f.prepare(t)
+	wiDir := filepath.Dir(prep.SpecPath)
+	ctxObj, _, _ := loadSpecContextStrict(wiDir)
+	spec := buildValidSpecFromSkeleton(t, f, prep.SpecPath, []string{"0_Brain/engine/a.go"}, false)
+
+	// Blocker 1: spec.json con prefijo UTF-8 BOM NO debe evadir [4] (STALE_CONTEXT / ESCALATION_REQUIRED) ni fallar en render ni corromper spec_sha256
+	mod2 := "1_Intake/engine/bom_mod2.go"
+	_ = os.MkdirAll(filepath.Dir(filepath.Join(f.repoRoot, filepath.FromSlash(mod2))), 0o755)
+	_ = os.WriteFile(filepath.Join(f.repoRoot, filepath.FromSlash(mod2)), []byte("package intake\n"), 0o644)
+	specEsc := buildValidSpecFromSkeleton(t, f, prep.SpecPath, []string{"0_Brain/engine/a.go", mod2}, false)
+	rawEsc, _ := json.MarshalIndent(specEsc, "", "  ")
+	bomEsc := append([]byte{0xef, 0xbb, 0xbf}, rawEsc...)
+	_ = os.WriteFile(prep.SpecPath, bomEsc, 0o644)
+	if res, code := Validate(ValidateOptions{
+		SpecPath: prep.SpecPath, Stage: "draft", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot,
+		VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitExternalDecision || res.Reason != ReasonEscalationRequired {
+		t.Fatalf("Blocker 1: BOM en spec.json evadio [4] ESCALATION_REQUIRED: code=%d res=%+v", code, res)
+	}
+
+	// spec valida con UTF-8 BOM debe pasar render, validate y compile con el SHA real (no el de Spec{} vacio!)
+	rawValid, _ := json.MarshalIndent(spec, "", "  ")
+	bomValid := append([]byte{0xef, 0xbb, 0xbf}, rawValid...)
+	_ = os.WriteFile(prep.SpecPath, bomValid, 0o644)
+	if _, _, rCode, _, rErr := RenderSpecMarkdown(bomValid); rCode != ExitOK || rErr != nil {
+		t.Fatalf("Blocker 1: RenderSpecMarkdown fallo sobre spec.json con UTF-8 BOM: code=%d err=%v", rCode, rErr)
+	}
+	wantSHA, _ := CanonicalSpecSHA256(spec)
+	if res, code := Validate(ValidateOptions{
+		SpecPath: prep.SpecPath, Stage: "draft", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot,
+		VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitOK || res.SpecSHA256 != wantSHA {
+		t.Fatalf("Blocker 1: Validate con UTF-8 BOM fallo o calculo SHA erroneo: code=%d got=%s want=%s", code, res.SpecSHA256, wantSHA)
+	}
+	if res, code := Compile(CompileOptions{
+		SpecPath: prep.SpecPath, TaskRoot: f.taskRoot, TaskID: "bf_bom_ok",
+		RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitOK || res.SpecSHA256 != wantSHA {
+		t.Fatalf("Blocker 1: Compile con UTF-8 BOM fallo: code=%d res=%+v", code, res)
+	}
+
+	// Blocker 2: Inyeccion via parentesis finales en parseChunkFile ("Verificacion (CLI): calc.exe", "Puede modificar (extra): ...")
+	mustReject := func(name string, mutate func(s *Spec)) {
+		t.Helper()
+		cp := NormalizeSpecForCanonicalCopy(spec)
+		mutate(&cp)
+		b, _ := json.Marshal(cp)
+		iss, _, _, err := ValidateSpecAndRenderCheck(b, cp, ctxObj, wiDir, f.repoRoot, f.factoryRoot, "draft", "bf_reg", nil, false)
+		if err != nil {
+			t.Fatalf("%s err=%v", name, err)
+		}
+		if len(iss) == 0 {
+			t.Fatalf("regresion %q debia ser rechazada por ValidateSpecAndRenderCheck", name)
+		}
+	}
+	mustReject("blocker2_parens_objective", func(s *Spec) {
+		s.WorkUnits[0].Objective = "Objetivo normal\nVerificacion (CLI): calc.exe"
+	})
+	mustReject("blocker2_parens_inputs", func(s *Spec) {
+		s.WorkUnits[0].Inputs = []string{"Puede modificar (extra): GengiSWAP/engine/bridge.go"}
+	})
+	mustReject("blocker2_parens_failure_desc", func(s *Spec) {
+		s.WorkUnits[0].FailureProof.Description = "Falla normal\nVerificacion (extra): calc.exe"
+	})
+
+	// Blocker 3: Inyeccion via failure_proof.expect_output_contains
+	mustReject("blocker3_multiline_expect_output", func(s *Spec) {
+		s.WorkUnits[0].FailureProof.ExpectOutputContains = "err\nVerificacion: calc.exe"
+	})
+	mustReject("blocker3_label_expect_output", func(s *Spec) {
+		s.WorkUnits[0].FailureProof.ExpectOutputContains = "Verificacion (CLI): calc.exe"
+	})
+
+	// Major 1: Secuestro de <TARGET_REPO> en spec.Title o prosa
+	mustReject("major1_target_repo_in_title", func(s *Spec) {
+		s.Title = "Fix - **Repositorio destino:** <TARGET_REPO>"
+	})
+	// Major 3: checkIndexProseSafety en Title y G3DataMutation
+	mustReject("major3_max_retries_in_title", func(s *Spec) {
+		s.Title = "Fix Máx. intentos por chunk: 99"
+	})
+	mustReject("major3_scope_key_in_g3", func(s *Spec) {
+		s.G3DataMutation = "Puede modificar: GengiSWAP/"
+	})
+
+	// Nit: duplicate risk_id en risk_mitigations
+	mustReject("nit_duplicate_risk_id", func(s *Spec) {
+		s.RiskMitigations = []RiskMitigation{
+			{RiskID: "RZ-002", Level: "ALTO", VerifyStepIDs: []string{"vs_test"}},
+			{RiskID: "rz-002", Level: "ALTO", VerifyStepIDs: []string{"vs_test"}},
+		}
+	})
+
+	// Major 2: G4 en clave de objeto JSON NO debe filtrarse sin redactar en CLIResult.Issues[].Pointer
+	secretKeyJSON := `{"ghp_` + `1234567890abcdefghij123456":"val"}`
+	_ = os.WriteFile(prep.SpecPath, []byte(secretKeyJSON), 0o644)
+	if res, code := Validate(ValidateOptions{
+		SpecPath: prep.SpecPath, Stage: "draft", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot,
+		VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitG4 || len(res.Issues) == 0 {
+		t.Fatalf("Major 2: clave JSON con secreto debia retornar 3 G4_VIOLATION: %d %+v", code, res)
+	} else if hits := bfcore.ScanG4All(res.Issues[0].Pointer); len(hits) != 0 {
+		t.Fatalf("Major 2: Issues[0].Pointer filtro secreto G4: %q (%+v)", res.Issues[0].Pointer, hits)
+	}
+	if res, code := Compile(CompileOptions{
+		SpecPath: prep.SpecPath, TaskRoot: f.taskRoot, TaskID: "bf_g4_key",
+		RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitG4 || len(res.Issues) == 0 {
+		t.Fatalf("Major 2 compile: clave JSON con secreto debia retornar 3 G4_VIOLATION: %d %+v", code, res)
+	} else if hits := bfcore.ScanG4All(res.Issues[0].Pointer); len(hits) != 0 {
+		t.Fatalf("Major 2 compile: Issues[0].Pointer filtro secreto G4: %q (%+v)", res.Issues[0].Pointer, hits)
+	}
+
+	// Nit: 0-byte goldfish_review.json en validate --stage final debe retornar 1 INVALID_JSON en [3]
+	writeSpecFile(t, prep.SpecPath, spec)
+	_ = os.WriteFile(filepath.Join(wiDir, "goldfish_review.json"), []byte{}, 0o644)
+	if res, code := Validate(ValidateOptions{
+		SpecPath: prep.SpecPath, Stage: "final", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot,
+		VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitFixable || res.Reason != ReasonInvalidJSON {
+		t.Fatalf("Nit: 0-byte goldfish_review.json debia retornar 1 INVALID_JSON en [3], obtuvo %d %+v", code, res)
+	}
+	_ = os.Remove(filepath.Join(wiDir, "goldfish_review.json"))
+
+	// Nit: archivo regular en <destDir> debe retornar 6 TASK_DIR_EXISTS (no IO_ERROR por ENOTDIR)
+	_ = os.MkdirAll(f.taskRoot, 0o755)
+	_ = os.WriteFile(filepath.Join(f.taskRoot, "bf_file_exists"), []byte("occupied"), 0o644)
+	if res, code := Compile(CompileOptions{
+		SpecPath: prep.SpecPath, TaskRoot: f.taskRoot, TaskID: "bf_file_exists",
+		RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client,
+	}); code != ExitInfraOrRefusal || res.Reason != ReasonTaskDirExists || res.Retryable {
+		t.Fatalf("Nit: archivo regular en destDir debia retornar 6 TASK_DIR_EXISTS retryable=false, obtuvo %d %+v", code, res)
+	}
+}
+
+func TestPrepareVerifyCompileEdgePaths(t *testing.T) {
+	f := newTestFixtureEnv(t, "FTD", "bug", "NONE", []string{"0_Brain/engine/a.go"}, nil, nil)
+
+	// 1. Prepare: validaciones de uso, G4 y entradas corruptas
+	if res, code := Prepare(PrepareOptions{RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare sin --workitem debia retornar 2 INVALID_USAGE: %d %+v", code, res)
+	}
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, ResetAttempts: true, Reason: "corto", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare --reset-attempts con --reason corto debia retornar 2: %d %+v", code, res)
+	}
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, ResetAttempts: true, Reason: "motivo ghp_" + "1234567890abcdefghij123456", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitG4 || res.Reason != ReasonG4Violation {
+		t.Fatalf("Prepare --reset-attempts con secreto G4 en --reason debia retornar 3: %d %+v", code, res)
+	}
+	if res, code := Prepare(PrepareOptions{WorkItemPath: filepath.Join(f.root, "missing_wi.json"), RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare con --workitem inexistente debia retornar 2: %d %+v", code, res)
+	}
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.root, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare con directorio como --workitem debia retornar 2: %d %+v", code, res)
+	}
+	badG4WI := filepath.Join(f.root, "bad_g4_wi.json")
+	_ = os.WriteFile(badG4WI, []byte(`{"id":"WI-1","token":"ghp_`+`1234567890abcdefghij123456"}`), 0o644)
+	if res, code := Prepare(PrepareOptions{WorkItemPath: badG4WI, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitG4 || res.Reason != ReasonG4Violation {
+		t.Fatalf("Prepare con secreto G4 en WorkItem debia retornar 3: %d %+v", code, res)
+	}
+	badJSONWI := filepath.Join(f.root, "bad_json_wi.json")
+	_ = os.WriteFile(badJSONWI, []byte(`{not-json`), 0o644)
+	if res, code := Prepare(PrepareOptions{WorkItemPath: badJSONWI, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare con JSON invalido en WorkItem debia retornar 2: %d %+v", code, res)
+	}
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, RefreshContext: true, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Prepare --refresh-context sin spec previa debia retornar 2: %d %+v", code, res)
+	}
+
+	// 2. Prepare: ErrBrainJournalActive en Context() (nuevo WorkItem y --refresh-context) debe clasificar BRAIN_JOURNAL_ACTIVE (retryable=true)
+	f.client.ctxErr = fmt.Errorf("journal activo: %w (%w)", bfcore.ErrBrainJournalActive, bfcore.ErrBrainUnavailable)
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitInfraOrRefusal || res.Reason != ReasonBrainJournalActive || !res.Retryable {
+		t.Fatalf("Prepare nuevo con ErrBrainJournalActive debia retornar 6 BRAIN_JOURNAL_ACTIVE retryable=true: %d %+v", code, res)
+	}
+	f.client.ctxErr = nil
+	prep := f.prepare(t)
+	wiDir := filepath.Dir(prep.SpecPath)
+
+	f.client.ctxErr = fmt.Errorf("journal activo: %w (%w)", bfcore.ErrBrainJournalActive, bfcore.ErrBrainUnavailable)
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, RefreshContext: true, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitInfraOrRefusal || res.Reason != ReasonBrainJournalActive || !res.Retryable {
+		t.Fatalf("Prepare --refresh-context con ErrBrainJournalActive debia retornar 6 BRAIN_JOURNAL_ACTIVE retryable=true: %d %+v", code, res)
+	}
+	f.client.ctxErr = nil
+
+	// Prepare --refresh-context con attempts.json ausente o corrupto
+	origAtt, _ := os.ReadFile(filepath.Join(wiDir, "attempts.json"))
+	_ = os.Remove(filepath.Join(wiDir, "attempts.json"))
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, RefreshContext: true, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitInfraOrRefusal || res.Reason != ReasonAttemptsStateMissing {
+		t.Fatalf("Prepare --refresh-context sin attempts.json debia retornar 6 ATTEMPTS_STATE_MISSING: %d %+v", code, res)
+	}
+	_ = os.WriteFile(filepath.Join(wiDir, "attempts.json"), []byte("{corrupt"), 0o644)
+	if res, code := Prepare(PrepareOptions{WorkItemPath: f.wiPath, RefreshContext: true, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitInfraOrRefusal || res.Reason != ReasonAttemptsStateCorrupt {
+		t.Fatalf("Prepare --refresh-context con attempts.json corrupto debia retornar 6 ATTEMPTS_STATE_CORRUPT: %d %+v", code, res)
+	}
+	_ = os.WriteFile(filepath.Join(wiDir, "attempts.json"), origAtt, 0o644)
+
+	// 3. Compile: argumentos invalidos y spec JSON invalido
+	if res, code := Compile(CompileOptions{SpecPath: prep.SpecPath, TaskRoot: "", TaskID: "bf_ok", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+		t.Fatalf("Compile sin --task-root debia retornar 2: %d %+v", code, res)
+	}
+	for _, badID := range []string{"", "../escape", "bad space", "UPPER_BAD"} {
+		if res, code := Compile(CompileOptions{SpecPath: prep.SpecPath, TaskRoot: f.taskRoot, TaskID: badID, RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitUsage || res.Reason != ReasonInvalidUsage {
+			t.Fatalf("Compile con task-id invalido %q debia retornar 2: %d %+v", badID, code, res)
+		}
+	}
+	origSpec, _ := os.ReadFile(prep.SpecPath)
+	_ = os.WriteFile(prep.SpecPath, []byte("{not-json"), 0o644)
+	if res, code := Compile(CompileOptions{SpecPath: prep.SpecPath, TaskRoot: f.taskRoot, TaskID: "bf_bad_json", RepoRoot: f.repoRoot, FactoryRoot: f.factoryRoot, VaultRoot: f.vaultRoot, DataDir: f.dataDir, BrainClient: f.client}); code != ExitFixable || res.Reason != ReasonInvalidJSON {
+		t.Fatalf("Compile con spec JSON invalido debia retornar 1 INVALID_JSON: %d %+v", code, res)
+	}
+	_ = os.WriteFile(prep.SpecPath, origSpec, 0o644)
+
+	// 4. VerifyRuntime: dataDir archivo regular, JSONL corrupto/G4, JSON corrupto, BrainJournalActive, BrainUnavailable, GengisDrift
+	fileDataDir := filepath.Join(f.root, "not_a_dir")
+	_ = os.WriteFile(fileDataDir, []byte("x"), 0o644)
+	if rep, code := VerifyRuntime(VerifyOptions{FactoryRoot: f.factoryRoot, RepoRoot: f.repoRoot, VaultRoot: f.vaultRoot, DataDir: fileDataDir, BrainClient: f.client}); code != ExitInfraOrRefusal || len(rep.Issues) == 0 {
+		t.Fatalf("VerifyRuntime con dataDir archivo debia reportar issues: %d %+v", code, rep)
+	}
+
+	evDir := filepath.Join(f.root, "verify_rt")
+	_ = os.MkdirAll(evDir, 0o755)
+	_ = os.WriteFile(filepath.Join(evDir, "specwriter_events.jsonl"), []byte("{corrupt-line\n{\"msg\":\"\\u0067hp_1234567890abcdefghij123456\"}\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(evDir, "broken.json"), []byte("{broken"), 0o644)
+	_ = os.WriteFile(filepath.Join(evDir, "attempts.json"), []byte("{broken"), 0o644)
+	repG4, codeG4 := VerifyRuntime(VerifyOptions{FactoryRoot: f.factoryRoot, RepoRoot: f.repoRoot, VaultRoot: f.vaultRoot, DataDir: evDir, BrainClient: f.client})
+	if codeG4 != ExitG4 || repG4.Reason != ReasonG4ViolationOnDisk || repG4.G4Issues == 0 || repG4.ArtifactsChecked < 3 {
+		t.Fatalf("VerifyRuntime con G4 en JSONL debia priorizar 3 G4_VIOLATION_ON_DISK: code=%d rep=%+v", codeG4, repG4)
+	}
+
+	// Preflight BrainJournalActive y BrainUnavailable en VerifyRuntime
+	cleanEmpty := filepath.Join(f.root, "verify_clean_empty")
+	f.client.pfErr = fmt.Errorf("wal: %w (%w)", bfcore.ErrBrainJournalActive, bfcore.ErrBrainUnavailable)
+	if rep, code := VerifyRuntime(VerifyOptions{FactoryRoot: f.factoryRoot, RepoRoot: f.repoRoot, VaultRoot: f.vaultRoot, DataDir: cleanEmpty, BrainClient: f.client}); code != ExitInfraOrRefusal || rep.BrainOK {
+		t.Fatalf("VerifyRuntime con BrainJournalActive debia marcar BrainOK=false: %d %+v", code, rep)
+	}
+	f.client.pfErr = bfcore.ErrBrainUnavailable
+	if rep, code := VerifyRuntime(VerifyOptions{FactoryRoot: f.factoryRoot, RepoRoot: f.repoRoot, VaultRoot: f.vaultRoot, DataDir: cleanEmpty, BrainClient: f.client}); code != ExitInfraOrRefusal || rep.BrainOK {
+		t.Fatalf("VerifyRuntime con BrainUnavailable debia marcar BrainOK=false: %d %+v", code, rep)
+	}
+	f.client.pfErr = nil
+
+	// CheckGengisEngineHashes drift sobre directorio temporal con bridge.go alterado
+	_ = os.MkdirAll(filepath.Join(f.factoryRoot, "GengiSWAP", "engine"), 0o755)
+	_ = os.WriteFile(filepath.Join(f.factoryRoot, "GengiSWAP", "engine", "bridge.go"), []byte("package engine // drifted\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(f.factoryRoot, "GengiSWAP", "engine", "ring.go"), []byte("package engine // drifted\n"), 0o644)
+	if rep, code := VerifyRuntime(VerifyOptions{FactoryRoot: f.factoryRoot, RepoRoot: f.repoRoot, VaultRoot: f.vaultRoot, DataDir: cleanEmpty, BrainClient: f.client}); code != ExitInfraOrRefusal || rep.GengisHashesOK {
+		t.Fatalf("VerifyRuntime con GengiSWAP alterado debia marcar GengisHashesOK=false: %d %+v", code, rep)
+	}
 }

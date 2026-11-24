@@ -1,6 +1,7 @@
 package specwriter
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,7 +25,8 @@ func RenderSpecMarkdown(specBytes []byte) (string, Spec, int, string, error) {
 	}
 
 	var spec Spec
-	if err := json.Unmarshal(specBytes, &spec); err != nil {
+	trimmedSpec := bytes.TrimPrefix(specBytes, []byte{0xef, 0xbb, 0xbf})
+	if err := json.Unmarshal(trimmedSpec, &spec); err != nil {
 		return "", Spec{}, ExitFixable, ReasonInvalidJSON, fmt.Errorf("decodificando spec.json: %w", err)
 	}
 	if spec.SchemaVersion != SchemaVersion {

@@ -1,6 +1,7 @@
 package specwriter
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -181,8 +182,9 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 	}
 	if g4Hits, jsonErr := ScanRawAndDecodedG4(specBytes); len(g4Hits) > 0 {
+		safePtr := pointerOrRoot(bfcore.RedactAllG4(g4Hits[0].Field))
 		return failResult(ExitG4, ReasonG4Violation, "", "", 0, "", []ValidationIssue{{
-			Pointer: pointerOrRoot(g4Hits[0].Field),
+			Pointer: safePtr,
 			Code:    ReasonG4Violation,
 			Message: fmt.Sprintf("violacion G4 en spec.json (regla %s, linea %d)", g4Hits[0].Rule, g4Hits[0].Line),
 		}})
@@ -194,9 +196,23 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 		}})
 	}
 
+	trimmedSpecBytes := bytes.TrimPrefix(specBytes, []byte{0xef, 0xbb, 0xbf})
 	var spec Spec
-	_ = json.Unmarshal(specBytes, &spec)
-	specSHA, _ := CanonicalSpecSHA256(spec)
+	if err := json.Unmarshal(trimmedSpecBytes, &spec); err != nil {
+		return failResult(ExitFixable, ReasonInvalidJSON, "", "", 0, "", []ValidationIssue{{
+			Pointer: "/",
+			Code:    ReasonInvalidJSON,
+			Message: fmt.Sprintf("decodificando spec.json: %v", err),
+		}})
+	}
+	specSHA, err := CanonicalSpecSHA256(spec)
+	if err != nil {
+		return failResult(ExitFixable, ReasonInvalidJSON, "", "", 0, "", []ValidationIssue{{
+			Pointer: "/",
+			Code:    ReasonInvalidJSON,
+			Message: fmt.Sprintf("calculando spec_sha256: %v", err),
+		}})
+	}
 
 	// Si ASDD y goldfish_review.json esta presente, aplicar cuota y G4 antes de [6]
 	var goldfishDiskSHA string
@@ -277,6 +293,13 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 	if err != nil {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
 	}
+	if hits := bfcore.ScanTier1("repo_root", absRepoClean, false); len(hits) > 0 {
+		return failResult(ExitG4, ReasonG4Violation, ctxObj.TraceID, specSHA, 0, "", []ValidationIssue{{
+			Pointer: "/cli/repo_root",
+			Code:    ReasonG4Violation,
+			Message: fmt.Sprintf("secreto Tier 1 detectado en ruta resuelta de --repo-root (regla %s)", hits[0].Rule),
+		}})
+	}
 	absTaskRoot, err := filepath.Abs(opts.TaskRoot)
 	if err != nil {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
@@ -311,7 +334,7 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 	}
 	defer func() { _ = compileLock.Unlock() }()
 
-	// Comprobacion estricta create-only dentro de .compile.lock
+	// Comprobacion estricta create-only dentro de .compile.lock (inspeccionar destDir primero para distinguir archivo regular vs directorio con .ring/state.json)
 	destDir := filepath.Join(absTaskRoot, opts.TaskID)
 	ringStatePath := filepath.Join(destDir, ".ring", "state.json")
 	if err := bfcore.CheckNoReparseChain(absTaskRoot, destDir); err != nil {
@@ -320,16 +343,28 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 		}
 		return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
 	}
-	if _, stateErr := os.Lstat(ringStatePath); stateErr == nil {
-		return failResult(ExitInfraOrRefusal, ReasonLiveTaskState, ctxObj.TraceID, specSHA, 0, "", []ValidationIssue{{
-			Pointer: "/task_dir",
-			Code:    ReasonLiveTaskState,
-			Message: "existe .ring/state.json activo en destino; compile no sobrescribe tareas vivas",
-		}})
-	} else if !errors.Is(stateErr, os.ErrNotExist) {
-		return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
-	}
-	if _, destErr := os.Lstat(destDir); destErr == nil {
+	destFI, destErr := os.Lstat(destDir)
+	if destErr == nil {
+		if bfcore.IsReparseOrSymlink(destFI) {
+			return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, ctxObj.TraceID, specSHA, 0, "", nil)
+		}
+		if destFI.IsDir() {
+			if err := bfcore.CheckNoReparseChain(absTaskRoot, ringStatePath); err != nil {
+				if errors.Is(err, bfcore.ErrReparsePoint) {
+					return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, ctxObj.TraceID, specSHA, 0, "", nil)
+				}
+				return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
+			}
+			if _, stateErr := os.Lstat(ringStatePath); stateErr == nil {
+				return failResult(ExitInfraOrRefusal, ReasonLiveTaskState, ctxObj.TraceID, specSHA, 0, "", []ValidationIssue{{
+					Pointer: "/task_dir",
+					Code:    ReasonLiveTaskState,
+					Message: "existe .ring/state.json activo en destino; compile no sobrescribe tareas vivas",
+				}})
+			} else if !errors.Is(stateErr, os.ErrNotExist) {
+				return failResult(ExitInfraOrRefusal, ReasonIOError, ctxObj.TraceID, specSHA, 0, "", nil)
+			}
+		}
 		return failResult(ExitInfraOrRefusal, ReasonTaskDirExists, ctxObj.TraceID, specSHA, 0, "", []ValidationIssue{{
 			Pointer: "/task_dir",
 			Code:    ReasonTaskDirExists,
@@ -399,11 +434,19 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 		return failResult(ExitFixable, ReasonValidatorBypassDefect, ctxObj.TraceID, specSHA, 0, "", issues)
 	}
 
-	// [0] Frontera G4 de dos zonas: enlazar <TARGET_REPO> solo en el index.md externo
+	// [0] Frontera G4 de dos zonas: enlazar la linea exacta <TARGET_REPO> solo en el index.md externo
+	const targetRepoLine = "\n- **Repositorio destino:** <TARGET_REPO>\n"
+	if strings.Count(rendered.IndexMD, targetRepoLine) != 1 {
+		return failResult(ExitFixable, ReasonValidatorBypassDefect, ctxObj.TraceID, specSHA, 0, "", []ValidationIssue{{
+			Pointer: "/render/index",
+			Code:    ReasonValidatorBypassDefect,
+			Message: "invariante rota: marcador unico <TARGET_REPO> no encontrado exactamente una vez en index.md",
+		}})
+	}
 	finalIndexMD := strings.Replace(
 		rendered.IndexMD,
-		"- **Repositorio destino:** <TARGET_REPO>",
-		"- **Repositorio destino:** "+absRepoClean,
+		targetRepoLine,
+		"\n- **Repositorio destino:** "+absRepoClean+"\n",
 		1,
 	)
 

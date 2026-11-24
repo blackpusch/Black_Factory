@@ -280,6 +280,9 @@ func Prepare(opts PrepareOptions) (PrepareResult, int) {
 		if opts.RefreshContext {
 			sc, bErr := buildContext()
 			if bErr != nil {
+				if errors.Is(bErr, bfcore.ErrBrainJournalActive) {
+					return fail(ExitInfraOrRefusal, ReasonBrainJournalActive, bErr.Error(), wi.TraceID, wi.ID)
+				}
 				if errors.Is(bErr, bfcore.ErrBrainUnavailable) {
 					return fail(ExitInfraOrRefusal, ReasonBrainUnavailable, bErr.Error(), wi.TraceID, wi.ID)
 				}
@@ -347,6 +350,9 @@ func Prepare(opts PrepareOptions) (PrepareResult, int) {
 	// Caso B: WorkItem nuevo
 	sc, bErr := buildContext()
 	if bErr != nil {
+		if errors.Is(bErr, bfcore.ErrBrainJournalActive) {
+			return fail(ExitInfraOrRefusal, ReasonBrainJournalActive, bErr.Error(), wi.TraceID, wi.ID)
+		}
 		if errors.Is(bErr, bfcore.ErrBrainUnavailable) {
 			return fail(ExitInfraOrRefusal, ReasonBrainUnavailable, bErr.Error(), wi.TraceID, wi.ID)
 		}

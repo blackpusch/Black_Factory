@@ -207,6 +207,7 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 
 	goldfishPath := filepath.Join(wiDir, "goldfish_review.json")
 	var goldfishRaw []byte
+	goldfishPresent := false
 	if stage == "final" {
 		gfFI, gfErr := os.Lstat(goldfishPath)
 		if gfErr == nil {
@@ -233,6 +234,7 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 			if err != nil {
 				return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 			}
+			goldfishPresent = true
 		} else if !errors.Is(gfErr, os.ErrNotExist) {
 			return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 		}
@@ -243,10 +245,11 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 	}
 	if g4Hits, jsonErr := ScanRawAndDecodedG4(specBytes); len(g4Hits) > 0 {
-		detail := fmt.Sprintf("regla %s en %s", g4Hits[0].Rule, g4Hits[0].Field)
+		safePtr := pointerOrRoot(bfcore.RedactAllG4(g4Hits[0].Field))
+		detail := fmt.Sprintf("regla %s en %s", g4Hits[0].Rule, safePtr)
 		consumeStageAttempt(ExitG4, ReasonG4Violation, "", "", detail)
 		return failResult(ExitG4, ReasonG4Violation, "", "", 0, "", []ValidationIssue{{
-			Pointer: pointerOrRoot(g4Hits[0].Field),
+			Pointer: safePtr,
 			Code:    ReasonG4Violation,
 			Message: fmt.Sprintf("violacion G4 detectada (regla %s, linea %d)", g4Hits[0].Rule, g4Hits[0].Line),
 		}})
@@ -259,7 +262,7 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 		}})
 	}
 
-	if len(goldfishRaw) > 0 {
+	if goldfishPresent {
 		if g4Hits, jsonErr := ScanRawAndDecodedG4(goldfishRaw); len(g4Hits) > 0 {
 			detail := fmt.Sprintf("regla %s en goldfish_review.json", g4Hits[0].Rule)
 			consumeStageAttempt(ExitG4, ReasonG4Violation, "", "", detail)
@@ -308,9 +311,25 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 		}})
 	}
 
+	trimmedSpecBytes := bytes.TrimPrefix(specBytes, []byte{0xef, 0xbb, 0xbf})
 	var spec Spec
-	_ = json.Unmarshal(specBytes, &spec)
-	specSHA, _ := CanonicalSpecSHA256(spec)
+	if err := json.Unmarshal(trimmedSpecBytes, &spec); err != nil {
+		consumeStageAttempt(ExitFixable, ReasonInvalidJSON, ctxObj.TraceID, "", "decodificando spec.json")
+		return failResult(ExitFixable, ReasonInvalidJSON, ctxObj.TraceID, "", 0, "", []ValidationIssue{{
+			Pointer: "/",
+			Code:    ReasonInvalidJSON,
+			Message: fmt.Sprintf("decodificando spec.json: %v", err),
+		}})
+	}
+	specSHA, err := CanonicalSpecSHA256(spec)
+	if err != nil {
+		consumeStageAttempt(ExitFixable, ReasonInvalidJSON, ctxObj.TraceID, "", "calculando spec_sha256")
+		return failResult(ExitFixable, ReasonInvalidJSON, ctxObj.TraceID, "", 0, "", []ValidationIssue{{
+			Pointer: "/",
+			Code:    ReasonInvalidJSON,
+			Message: fmt.Sprintf("calculando spec_sha256: %v", err),
+		}})
+	}
 
 	// [4] Decision Externa (STALE_CONTEXT -> ESCALATION_REQUIRED -> LANE_UPGRADE_REQUIRED)
 	extRes, extErrCode, extErrReason := evaluateExternalDecisions(spec, ctxObj, repoRoot, vaultRoot, pf.DBPath, client)
@@ -758,17 +777,18 @@ func ValidateSpecAndRenderCheck(
 		}
 	}
 
-	// G2: cero bloques Mermaid en cualquier string del spec
+	// G2: cero bloques Mermaid y prohibir marcador reservado <TARGET_REPO> en cualquier string del spec
 	if reMermaidFence.MatchString(string(cleanedBytes)) {
 		addIssue("/", ReasonValidationFailed, "violacion G2: bloques Mermaid prohibidos (use diagramas ASCII/Unicode Box-Drawing)")
-	} else {
-		var rawAny any
-		if json.Unmarshal(cleanedBytes, &rawAny) == nil {
-			checkNoMermaidInJSON(rawAny, "", addIssue)
-		}
+	}
+	var rawAny any
+	if json.Unmarshal(cleanedBytes, &rawAny) == nil {
+		checkNoMermaidOrReservedMarkerInJSON(rawAny, "", addIssue)
 	}
 
-	// Guardas de prosa index.md (parseIndexFile)
+	// Guardas de prosa index.md (parseIndexFile) incluyendo title y g3_data_mutation
+	checkIndexProseSafety(spec.Title, "/title", addIssue)
+	checkIndexProseSafety(spec.G3DataMutation, "/g3_data_mutation", addIssue)
 	checkIndexProseSafety(spec.Narrative.Problem, "/narrative/problem", addIssue)
 	for i, sa := range spec.StackAssumptions {
 		if strings.TrimSpace(sa) == "" {
@@ -959,6 +979,13 @@ func ValidateSpecAndRenderCheck(
 		} else {
 			checkChunkProseSafety(u.FailureProof.Description, uPtr+"/failure_proof/description", false, addIssue)
 		}
+		if u.FailureProof.ExpectOutputContains != "" {
+			if hasLineBreak(u.FailureProof.ExpectOutputContains) {
+				addIssue(uPtr+"/failure_proof/expect_output_contains", ReasonValidationFailed, "failure_proof.expect_output_contains debe ser de una sola linea sin saltos de linea")
+			} else {
+				checkChunkProseSafety(u.FailureProof.ExpectOutputContains, uPtr+"/failure_proof/expect_output_contains", true, addIssue)
+			}
+		}
 		if u.FailureProof.ExpectExit < 1 || u.FailureProof.ExpectExit > 255 {
 			addIssue(uPtr+"/failure_proof/expect_exit", ReasonValidationFailed, "failure_proof.expect_exit debe estar entre 1 y 255")
 		}
@@ -1148,6 +1175,8 @@ func ValidateSpecAndRenderCheck(
 		idKey := strings.ToUpper(strings.TrimSpace(rm.RiskID))
 		if idKey == "" {
 			addIssue(rmPtr+"/risk_id", ReasonValidationFailed, "risk_mitigation.risk_id obligatorio")
+		} else if _, dup := mitByID[idKey]; dup {
+			addIssue(rmPtr+"/risk_id", ReasonValidationFailed, fmt.Sprintf("risk_mitigation.risk_id duplicado %q", rm.RiskID))
 		} else {
 			mitByID[idKey] = rm
 		}
@@ -1877,7 +1906,37 @@ func extractFieldLabelKey(line string) (string, bool) {
 	return k, true
 }
 
+func stripBridgeTrailingParens(s string) string {
+	out := strings.TrimSpace(s)
+	for strings.HasSuffix(out, ")") {
+		depth := 0
+		openIdx := -1
+		for i := len(out) - 1; i >= 0; i-- {
+			switch out[i] {
+			case ')':
+				depth++
+			case '(':
+				depth--
+				if depth == 0 {
+					openIdx = i
+				}
+			}
+			if openIdx >= 0 {
+				break
+			}
+		}
+		if openIdx <= 0 || out[openIdx-1] != ' ' {
+			break
+		}
+		out = strings.TrimSpace(out[:openIdx])
+	}
+	return out
+}
+
 func normalizeBridgeKey(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "*:`")
+	s = stripBridgeTrailingParens(s)
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.Trim(s, "*:` ")
 	r := strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u")
@@ -2302,19 +2361,22 @@ func verifyRenderedGengisParity(r RenderedTaskFiles) []ValidationIssue {
 	return issues
 }
 
-func checkNoMermaidInJSON(v any, ptr string, addIssue func(string, string, string)) {
+func checkNoMermaidOrReservedMarkerInJSON(v any, ptr string, addIssue func(string, string, string)) {
 	switch t := v.(type) {
 	case string:
 		if reMermaidFence.MatchString(t) {
 			addIssue(pointerOrRoot(ptr), ReasonValidationFailed, "violacion G2: bloque Mermaid prohibido")
 		}
+		if strings.Contains(t, "<TARGET_REPO>") {
+			addIssue(pointerOrRoot(ptr), ReasonValidationFailed, "marcador reservado <TARGET_REPO> prohibido en campos de spec.json")
+		}
 	case []any:
 		for i, elem := range t {
-			checkNoMermaidInJSON(elem, fmt.Sprintf("%s/%d", ptr, i), addIssue)
+			checkNoMermaidOrReservedMarkerInJSON(elem, fmt.Sprintf("%s/%d", ptr, i), addIssue)
 		}
 	case map[string]any:
 		for k, val := range t {
-			checkNoMermaidInJSON(val, ptr+"/"+escapeJSONPointer(k), addIssue)
+			checkNoMermaidOrReservedMarkerInJSON(val, ptr+"/"+escapeJSONPointer(k), addIssue)
 		}
 	}
 }
