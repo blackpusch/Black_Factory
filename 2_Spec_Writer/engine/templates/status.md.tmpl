@@ -1,0 +1,13 @@
+# Estado de Chunks: {{.TaskID}}
+
+{{range .Chunks}}- [ ] **pendiente**: `{{.ChunkID}}` - {{.Title}}
+{{end}}
+---
+*Trazabilidad:* `spec_sha256={{.SpecSHA256}}` | `trace_id={{.TraceID}}`
+
+*Convenciones de estado (Protocolo v2):*
+- `pendiente`: chunk aún no iniciado.
+- `entregado`: el Chef terminó; espera QA del Preparador y decisión del Autor.
+- `hecho`: QA PASS y GO_NEXT del Autor, con evidencia literal G1 bajo su viñeta.
+- `parcial`: chunk NO cerrado; detiene la cadena hasta resolverse.
+- `bloqueado`: impedimento que requiere intervención del Autor o del Preparador.
