@@ -338,7 +338,7 @@ func VerifyRuntime(opts VerifyOptions) (VerifyReport, int) {
 						continue
 					}
 					var obj map[string]any
-					if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+					if err := json.Unmarshal([]byte(trimmed), &obj); err != nil || obj == nil {
 						hasArtifactBad = true
 						report.Issues = append(report.Issues, ValidationIssue{Pointer: fmt.Sprintf("/runtime/%s#%d", relSlash, idx+1), Code: ReasonArtifactStateCorrupt, Message: fmt.Sprintf("linea JSONL corrupta en %s:%d", relSlash, idx+1)})
 						continue

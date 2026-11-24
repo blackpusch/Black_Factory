@@ -48,8 +48,6 @@ func (f *fakeBrainClient) Context(vaultRoot, dbPath, project string, files []str
 	return f.resp, inv, nil
 }
 
-type failingWriteSessionStateDir struct{}
-
 func TestVerifyRuntimeAllPrioritiesAndCleanCheckout(t *testing.T) {
 	tmp := t.TempDir()
 	factory := filepath.Join(tmp, "factory")
@@ -797,5 +795,103 @@ func TestVerifyArtifactsSessionErrorsAndCleanupBranch(t *testing.T) {
 	}
 	if exists, _ := (ExecGitClient{}).BranchExists(context.Background(), repo, "build/bf_life_01"); exists {
 		t.Fatalf("expected branch build/bf_life_01 deleted")
+	}
+}
+
+func TestChunkTransitionFailClosedAndCleanupMismatchMissing(t *testing.T) {
+	repo, factory, taskDir, wtRoot, dataDir, headSHA := setupLifecycleTaskFixture(t, true)
+	vault := filepath.Join(factory, "0_Brain", "vault")
+	_ = os.MkdirAll(vault, 0o755)
+	_ = os.WriteFile(filepath.Join(vault, "doc.md"), []byte("# Doc\n"), 0o644)
+
+	// Two-chunk ring state
+	stPath := filepath.Join(taskDir, ".ring", "state.json")
+	st, _ := LoadRingState(taskDir)
+	st.Chunks = append(st.Chunks, RingChunk{
+		ID:             "02_second",
+		Spec:           "Second chunk",
+		Acceptance:     []string{"OK"},
+		VerifyCommands: []string{"go test ./..."},
+		FailureProof:   "fails on bug",
+		Scope:          Scope{CanModify: []string{"pkg/"}},
+		Status:         "PENDING",
+	})
+	b, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(stPath, b, 0o644)
+
+	fb := &fakeBrainClient{}
+	if _, code := Init(InitOptions{
+		TaskDir:      taskDir,
+		RepoRoot:     repo,
+		FactoryRoot:  factory,
+		DataDir:      dataDir,
+		WorktreeRoot: wtRoot,
+		VaultRoot:    vault,
+		BrainClient:  fb,
+	}); code != ExitOK {
+		t.Fatalf("Init failed: %d", code)
+	}
+
+	// Simulate GO_NEXT to Chunk 2 while .ring/base_ref is missing -> ARTIFACT_STATE_CORRUPT (6) instead of silent fallback
+	st.Chunks[0].Status = "DONE"
+	st.Chunks[0].Attempts = []RingAttempt{{N: 1, QADone: true, QAPassed: true, Verdict: &RingVerdict{Decision: "GO_NEXT"}}}
+	st.Index = 1
+	b2, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(stPath, b2, 0o644)
+
+	baseRefPath := filepath.Join(taskDir, ".ring", "base_ref")
+	_ = os.Remove(baseRefPath)
+	if ctxBadRef, codeBadRef := Context(ContextOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb,
+	}); codeBadRef != ExitInfraOrRefusal || ctxBadRef.Reason != ReasonArtifactStateCorrupt {
+		t.Fatalf("expected ARTIFACT_STATE_CORRUPT when .ring/base_ref missing on GO_NEXT, got %d %+v", codeBadRef, ctxBadRef)
+	}
+
+	// Restore .ring/base_ref, fail 0_Brain Context query -> BRAIN_UNAVAILABLE (6) fail-closed
+	_ = os.WriteFile(baseRefPath, []byte(headSHA+"\n"), 0o644)
+	fb.ctxErr = errors.New("brain context timed out")
+	if ctxNoBrain, codeNoBrain := Context(ContextOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb,
+	}); codeNoBrain != ExitInfraOrRefusal || ctxNoBrain.Reason != ReasonBrainUnavailable {
+		t.Fatalf("expected BRAIN_UNAVAILABLE fail-closed on GO_NEXT, got %d %+v", codeNoBrain, ctxNoBrain)
+	}
+
+	// Recover 0_Brain + --refresh-brain during same chunkChanged -> single 0_Brain call, transitions to 02_second cleanly
+	fb.ctxErr = nil
+	callsBefore := fb.calls
+	ctxNext, codeNext := Context(ContextOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb, RefreshBrain: true,
+	})
+	if codeNext != ExitOK || !ctxNext.OK || ctxNext.ChunkID != "02_second" || ctxNext.Attempt != 1 || ctxNext.BrainContext.ChunkID != "02_second" {
+		t.Fatalf("expected clean transition to 02_second attempt 1, got %d %+v", codeNext, ctxNext)
+	}
+	if fb.calls-callsBefore != 1 {
+		t.Fatalf("expected exactly 1 0_Brain Context call when chunkChanged+RefreshBrain, got %d", fb.calls-callsBefore)
+	}
+
+	// Cleanup rejects mismatched --worktree-root / --repo-root
+	otherWtRoot := filepath.Join(t.TempDir(), "other_wt")
+	if clMis, codeMis := Cleanup(CleanupOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: otherWtRoot, Force: true,
+	}); codeMis != ExitInfraOrRefusal || clMis.Reason != ReasonWorktreePathMismatch {
+		t.Fatalf("expected WORKTREE_PATH_MISMATCH in Cleanup, got %d %+v", codeMis, clMis)
+	}
+
+	// Manually delete worktree directory -> Cleanup without --force returns WORKTREE_MISSING; with --force prunes and marks removed
+	st.Status = "DONE"
+	st.Chunks[1].Status = "DONE"
+	b3, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(stPath, b3, 0o644)
+	_ = os.RemoveAll(filepath.Join(wtRoot, "bf_life_01"))
+
+	if clMiss, codeMiss := Cleanup(CleanupOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot,
+	}); codeMiss != ExitInfraOrRefusal || clMiss.Reason != ReasonWorktreeMissing {
+		t.Fatalf("expected WORKTREE_MISSING when dir missing without --force, got %d %+v", codeMiss, clMiss)
+	}
+	if clPrune, codePrune := Cleanup(CleanupOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, Force: true,
+	}); codePrune != ExitOK || !clPrune.OK {
+		t.Fatalf("expected forced Cleanup prune to succeed when dir already deleted, got %d %+v", codePrune, clPrune)
 	}
 }

@@ -245,7 +245,7 @@ func BuildGengisDecideCommand(gengisBin, taskDir, gengisRoot string, qaPass bool
 			note = "Modo QA FAIL"
 		}
 	}
-	note = strings.NewReplacer("\r", " ", "\n", " ", `"`, "'", "`", "'", "$", "", "%", "").Replace(note)
+	note = strings.NewReplacer("\r", " ", "\n", " ", `"`, "'", "`", "'", "$", "", "%", "", `\`, "/").Replace(note)
 	return fmt.Sprintf(`"%s" decide "%s" --root "%s" --qa-pass=%t --qa-notes="%s"`,
 		gengisBin, filepath.Clean(taskDir), filepath.Clean(gengisRoot), qaPass, note)
 }
@@ -268,7 +268,15 @@ func SyncSessionWithRingState(ctx context.Context, gc GitClient, sctx *SessionRu
 			return nil, RingChunk{}, 0, false, &r, c
 		}
 		chunks, cErr := ParseChunksDir(sctx.AbsTaskDir, sctx.AbsWorktree)
-		if cErr != nil || len(chunks) == 0 {
+		if cErr != nil {
+			if errors.Is(cErr, bfcore.ErrReparsePoint) {
+				r, c := failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+				return nil, RingChunk{}, 0, false, &r, c
+			}
+			r, c := failResult(ExitUsage, ReasonTaskDirInvalid, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			return nil, RingChunk{}, 0, false, &r, c
+		}
+		if len(chunks) == 0 {
 			r, c := failResult(ExitUsage, ReasonTaskDirInvalid, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 			return nil, RingChunk{}, 0, false, &r, c
 		}
@@ -318,11 +326,23 @@ func SyncSessionWithRingState(ctx context.Context, gc GitClient, sctx *SessionRu
 	chunkChanged := sctx.Session.ActiveChunkID != activeChunk.ID
 
 	if windowChanged {
-		baseRef := sctx.Session.ActiveBaseRef
-		if rawBase, bErr := LoadRingBaseRef(sctx.AbsTaskDir); bErr == nil && rawBase != "" {
-			if resolved, rErr := gc.RevParse(ctx, sctx.AbsWorktree, rawBase+"^{commit}"); rErr == nil && reHex40.MatchString(resolved) {
-				baseRef = resolved
+		rawBase, bErr := LoadRingBaseRef(sctx.AbsTaskDir)
+		if bErr != nil {
+			if errors.Is(bErr, bfcore.ErrReparsePoint) {
+				r, c := failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+				return ringSt, activeChunk, attemptNum, false, &r, c
 			}
+			r, c := failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			return ringSt, activeChunk, attemptNum, false, &r, c
+		}
+		if rawBase == "" {
+			r, c := failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			return ringSt, activeChunk, attemptNum, false, &r, c
+		}
+		baseRef, rErr := gc.RevParse(ctx, sctx.AbsWorktree, rawBase+"^{commit}")
+		if rErr != nil || !reHex40.MatchString(baseRef) {
+			r, c := failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			return ringSt, activeChunk, attemptNum, false, &r, c
 		}
 		sctx.Session.ActiveChunkID = activeChunk.ID
 		sctx.Session.ActiveAttempt = attemptNum
@@ -344,11 +364,22 @@ func SyncSessionWithRingState(ctx context.Context, gc GitClient, sctx *SessionRu
 		sctx.Session.TDD.Red = nil
 		sctx.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-		if chunkChanged && brainClient != nil {
+		if (chunkChanged || sctx.Session.BrainContext.ChunkID != activeChunk.ID) && brainClient != nil {
 			qFiles := effectiveQueriedFiles(sctx.Meta.Scope, activeChunk)
-			if snap, qErr := QueryBrainSnapshot(brainClient, sctx.Roots.VaultRoot, "", sctx.Session.Project, activeChunk.ID, qFiles); qErr == nil {
-				sctx.Session.BrainContext = snap
+			snap, qErr := QueryBrainSnapshot(brainClient, sctx.Roots.VaultRoot, "", sctx.Session.Project, activeChunk.ID, qFiles)
+			if qErr != nil {
+				reason := ReasonBrainUnavailable
+				if errors.Is(qErr, bfcore.ErrBrainJournalActive) {
+					reason = ReasonBrainJournalActive
+				} else if errors.Is(qErr, bfcore.ErrReparsePoint) {
+					reason = ReasonReparsePointDetected
+				}
+				r, c := failResult(ExitInfraOrRefusal, reason, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+					Pointer: "/brain", Code: reason, Message: bfcore.RedactAllG4(qErr.Error()),
+				}})
+				return ringSt, activeChunk, attemptNum, false, &r, c
 			}
+			sctx.Session.BrainContext = snap
 		}
 	}
 	return ringSt, activeChunk, attemptNum, windowChanged, nil, ExitOK
@@ -384,18 +415,29 @@ func Context(opts ContextOptions) (ContextResult, int) {
 		}), ExitInfraOrRefusal
 	}
 
-	ringSt, activeChunk, attemptNum, changed, syncErr, syncCode := SyncSessionWithRingState(context.Background(), gc, &sctx, client, false)
+	prevRiskLevel := sctx.Session.BrainContext.HighestRiskLevel
+	syncBrainClient := client
+	if opts.RefreshBrain {
+		syncBrainClient = nil
+	}
+	ringSt, activeChunk, attemptNum, changed, syncErr, syncCode := SyncSessionWithRingState(context.Background(), gc, &sctx, syncBrainClient, false)
 	if syncErr != nil {
 		return contextErrorFromCLI(*syncErr), syncCode
 	}
 
-	prevRiskLevel := sctx.Session.BrainContext.HighestRiskLevel
-	if opts.RefreshBrain {
+	var refreshedEventDetail *string
+	if opts.RefreshBrain || (ringSt != nil && ringSt.PlanApproved && sctx.Session.BrainContext.ChunkID != activeChunk.ID) {
 		qFiles := effectiveQueriedFiles(sctx.Meta.Scope, activeChunk)
 		snap, qErr := QueryBrainSnapshot(client, sctx.Roots.VaultRoot, "", sctx.Session.Project, activeChunk.ID, qFiles)
 		if qErr != nil {
+			reason := ReasonBrainUnavailable
+			if errors.Is(qErr, bfcore.ErrBrainJournalActive) {
+				reason = ReasonBrainJournalActive
+			} else if errors.Is(qErr, bfcore.ErrReparsePoint) {
+				reason = ReasonReparsePointDetected
+			}
 			return contextErrorFromCLI(CLIResult{
-				ExitCode: ExitInfraOrRefusal, Reason: ReasonBrainUnavailable, Retryable: true,
+				ExitCode: ExitInfraOrRefusal, Reason: reason, Retryable: IsRetryableReason(ExitInfraOrRefusal, reason),
 				TraceID: sctx.Session.TraceID, TaskID: sctx.Session.TaskID,
 			}), ExitInfraOrRefusal
 		}
@@ -403,30 +445,43 @@ func Context(opts ContextOptions) (ContextResult, int) {
 		sctx.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		changed = true
 
-		riskNote := fmt.Sprintf("risk=%s", snap.HighestRiskLevel)
-		if prevRiskLevel != "" && prevRiskLevel != snap.HighestRiskLevel {
-			riskNote = fmt.Sprintf("risk_changed=%s->%s", prevRiskLevel, snap.HighestRiskLevel)
+		if opts.RefreshBrain {
+			riskNote := fmt.Sprintf("risk=%s", snap.HighestRiskLevel)
+			if prevRiskLevel != "" && prevRiskLevel != snap.HighestRiskLevel {
+				riskNote = fmt.Sprintf("risk_changed=%s->%s", prevRiskLevel, snap.HighestRiskLevel)
+			}
+			refreshedEventDetail = &riskNote
 		}
-		_ = AppendEvent(sctx.AbsDataDir, BuilderEvent{
-			Event:       "BRAIN_CONTEXT_REFRESHED",
-			TraceID:     sctx.Session.TraceID,
-			TaskID:      sctx.Session.TaskID,
-			ChunkID:     activeChunk.ID,
-			Attempt:     attemptNum,
-			BounceCycle: sctx.Session.BounceCycle,
-			ExitCode:    ExitOK,
-			Reason:      ReasonOK,
-			DurationMS:  time.Since(start).Milliseconds(),
-			Detail:      riskNote,
-		})
 	}
 
 	if changed {
 		if err := WriteJSONAtomicG4(sctx.SessionPath, sctx.Session); err != nil {
+			reason := ReasonIOError
+			code := ExitInfraOrRefusal
+			if errors.Is(err, ErrG4Violation) {
+				reason = ReasonG4Violation
+				code = ExitG4
+			} else if errors.Is(err, bfcore.ErrReparsePoint) {
+				reason = ReasonReparsePointDetected
+			}
 			return contextErrorFromCLI(CLIResult{
-				ExitCode: ExitInfraOrRefusal, Reason: ReasonIOError, Retryable: true,
+				ExitCode: code, Reason: reason, Retryable: IsRetryableReason(code, reason),
 				TraceID: sctx.Session.TraceID, TaskID: sctx.Session.TaskID,
-			}), ExitInfraOrRefusal
+			}), code
+		}
+		if refreshedEventDetail != nil {
+			_ = AppendEvent(sctx.AbsDataDir, BuilderEvent{
+				Event:       "BRAIN_CONTEXT_REFRESHED",
+				TraceID:     sctx.Session.TraceID,
+				TaskID:      sctx.Session.TaskID,
+				ChunkID:     activeChunk.ID,
+				Attempt:     attemptNum,
+				BounceCycle: sctx.Session.BounceCycle,
+				ExitCode:    ExitOK,
+				Reason:      ReasonOK,
+				DurationMS:  time.Since(start).Milliseconds(),
+				Detail:      *refreshedEventDetail,
+			})
 		}
 	}
 

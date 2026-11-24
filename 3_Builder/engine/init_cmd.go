@@ -142,6 +142,13 @@ func Init(opts InitOptions) (CLIResult, int) {
 			Message: "WorkItem ID invalido en index.md",
 		}})
 	}
+	if meta.Lane != "" && meta.Lane != "FTD" && meta.Lane != "ASDD" {
+		return failResult(ExitUsage, ReasonTaskDirInvalid, meta.TraceID, taskID, []ValidationIssue{{
+			Pointer: "/index/lane",
+			Code:    ReasonTaskDirInvalid,
+			Message: fmt.Sprintf("carril %q invalido en index.md (solo FTD o ASDD)", meta.Lane),
+		}})
+	}
 	if meta.TargetRepo != "" && meta.TargetRepo != "<TARGET_REPO>" &&
 		!strings.EqualFold(filepath.Clean(meta.TargetRepo), absRepoClean) &&
 		!strings.EqualFold(filepath.Clean(meta.TargetRepo), absWorktreeClean) {
@@ -180,7 +187,13 @@ func Init(opts InitOptions) (CLIResult, int) {
 			}})
 		}
 		rawBaseRef, bErr := LoadRingBaseRef(absTaskDir)
-		if bErr != nil || rawBaseRef == "" {
+		if bErr != nil {
+			if errors.Is(bErr, bfcore.ErrReparsePoint) {
+				return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, meta.TraceID, taskID, nil)
+			}
+			return failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, meta.TraceID, taskID, nil)
+		}
+		if rawBaseRef == "" {
 			return failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, meta.TraceID, taskID, nil)
 		}
 		resolved, rErr := gc.RevParse(ctx, absRepoClean, rawBaseRef+"^{commit}")
@@ -280,9 +293,6 @@ func Init(opts InitOptions) (CLIResult, int) {
 			}
 		}
 	}
-	if headBranch, err := gc.RevParse(ctx, absRepoClean, "--abbrev-ref HEAD"); err == nil && headBranch == buildBranch {
-		return failResult(ExitExternalDecision, ReasonBranchCollision, meta.TraceID, taskID, nil)
-	}
 
 	traceID := meta.TraceID
 	if traceID == "" {
@@ -343,6 +353,26 @@ func Init(opts InitOptions) (CLIResult, int) {
 	}
 	defer func() { _ = rLock.Unlock() }()
 
+	// Re-verificar colision de rama bajo .repo-<sha16>.lock (cierra ventana TOCTOU pre-lock)
+	if exists, bErr := gc.BranchExists(ctx, absRepoClean, buildBranch); bErr != nil {
+		return failResult(ExitInfraOrRefusal, ReasonGitError, traceID, taskID, nil)
+	} else if exists {
+		return failResult(ExitExternalDecision, ReasonBranchCollision, traceID, taskID, []ValidationIssue{{
+			Pointer: "/cli/branch",
+			Code:    ReasonBranchCollision,
+			Message: fmt.Sprintf("la rama %q ya existe en el repositorio", buildBranch),
+		}})
+	}
+	if wtBranches, bErr := gc.ListWorktreeBranches(ctx, absRepoClean); bErr != nil {
+		return failResult(ExitInfraOrRefusal, ReasonGitError, traceID, taskID, nil)
+	} else {
+		for _, b := range wtBranches {
+			if b == buildBranch {
+				return failResult(ExitExternalDecision, ReasonBranchCollision, traceID, taskID, nil)
+			}
+		}
+	}
+
 	origIndexBytes, err := ReadFileWithShortRetry(indexPath)
 	if err != nil {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, traceID, taskID, nil)
@@ -377,6 +407,7 @@ func Init(opts InitOptions) (CLIResult, int) {
 	}
 	wtCreated = true
 
+	indexBound = true
 	if err := BindIndexTargetRepo(indexPath, absWorktreeClean); err != nil {
 		if errors.Is(err, ErrG4Violation) {
 			return failResult(ExitG4, ReasonG4Violation, traceID, taskID, nil)
@@ -387,7 +418,6 @@ func Init(opts InitOptions) (CLIResult, int) {
 			Message: bfcore.RedactAllG4(err.Error()),
 		}})
 	}
-	indexBound = true
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	st := SessionState{

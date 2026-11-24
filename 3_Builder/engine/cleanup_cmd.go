@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"blackfactory/pkg/bfcore"
@@ -18,6 +19,18 @@ func Cleanup(opts CleanupOptions) (CLIResult, int) {
 		return *errRes, code
 	}
 	defer func() { _ = sctx.Lock.Unlock() }()
+
+	_, repoSHA, _, err := ComputePathIdentity(sctx.AbsRepo)
+	if err != nil {
+		return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+	}
+	_, wtSHA, _, err := ComputePathIdentity(sctx.AbsWorktree)
+	if err != nil {
+		return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+	}
+	if sctx.Session.RepoRootSHA256 != repoSHA || sctx.Session.WorktreePathSHA256 != wtSHA {
+		return failResult(ExitInfraOrRefusal, ReasonWorktreePathMismatch, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+	}
 
 	ringSt, err := LoadRingState(sctx.AbsTaskDir)
 	if err != nil {
@@ -50,14 +63,36 @@ func Cleanup(opts CleanupOptions) (CLIResult, int) {
 	ctx := context.Background()
 
 	if sctx.Session.WorktreeStatus == "active" || opts.DeleteBranch {
-		if sctx.Session.WorktreeStatus == "active" && !opts.Force {
-			dirty, dErr := gc.StatusPorcelainZ(ctx, sctx.AbsWorktree)
-			if dErr == nil && len(dirty) > 0 {
-				return failResult(ExitFixable, ReasonWorktreeDirty, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
-					Pointer: "/worktree",
-					Code:    ReasonWorktreeDirty,
-					Message: "el worktree contiene cambios sin commitear (use --force para descartarlos)",
-				}})
+		wtPresent := false
+		if sctx.Session.WorktreeStatus == "active" {
+			_, lErr := os.Lstat(sctx.AbsWorktree)
+			if lErr == nil {
+				wtPresent = true
+				if rpErr := bfcore.CheckNoReparseChain("", sctx.AbsWorktree); rpErr != nil {
+					if errors.Is(rpErr, bfcore.ErrReparsePoint) {
+						return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+					}
+					return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+				}
+				if !opts.Force {
+					dirty, dErr := gc.StatusPorcelainZ(ctx, sctx.AbsWorktree)
+					if dErr != nil {
+						return failResult(ExitInfraOrRefusal, ReasonGitError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+					}
+					if len(dirty) > 0 {
+						return failResult(ExitFixable, ReasonWorktreeDirty, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+							Pointer: "/worktree",
+							Code:    ReasonWorktreeDirty,
+							Message: "el worktree contiene cambios sin commitear (use --force para descartarlos)",
+						}})
+					}
+				}
+			} else if errors.Is(lErr, os.ErrNotExist) {
+				if !opts.Force {
+					return failResult(ExitInfraOrRefusal, ReasonWorktreeMissing, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+				}
+			} else {
+				return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 			}
 		}
 
@@ -66,23 +101,32 @@ func Cleanup(opts CleanupOptions) (CLIResult, int) {
 			if errors.Is(rErr, ErrLockBusy) {
 				return failResult(ExitInfraOrRefusal, ReasonLockBusy, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 			}
+			if errors.Is(rErr, bfcore.ErrReparsePoint) {
+				return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			}
 			return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 		}
 		defer func() { _ = rLock.Unlock() }()
 
 		if sctx.Session.WorktreeStatus == "active" {
-			if err := gc.WorktreeRemove(ctx, sctx.AbsRepo, sctx.AbsWorktree, opts.Force); err != nil {
-				return failResult(ExitInfraOrRefusal, ReasonGitError, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
-					Pointer: "/worktree",
-					Code:    ReasonGitError,
-					Message: bfcore.RedactAllG4(err.Error()),
-				}})
+			if wtPresent {
+				if err := gc.WorktreeRemove(ctx, sctx.AbsRepo, sctx.AbsWorktree, opts.Force); err != nil {
+					return failResult(ExitInfraOrRefusal, ReasonGitError, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+						Pointer: "/worktree",
+						Code:    ReasonGitError,
+						Message: bfcore.RedactAllG4(err.Error()),
+					}})
+				}
 			}
 			_ = gc.WorktreePrune(ctx, sctx.AbsRepo)
 		}
 
 		if opts.DeleteBranch {
-			if exists, _ := gc.BranchExists(ctx, sctx.AbsRepo, sctx.Session.BuildBranch); exists {
+			exists, bErr := gc.BranchExists(ctx, sctx.AbsRepo, sctx.Session.BuildBranch)
+			if bErr != nil {
+				return failResult(ExitInfraOrRefusal, ReasonGitError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+			}
+			if exists {
 				if err := gc.DeleteBranch(ctx, sctx.AbsRepo, sctx.Session.BuildBranch); err != nil {
 					return failResult(ExitInfraOrRefusal, ReasonGitError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 				}
