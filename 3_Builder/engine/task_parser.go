@@ -223,7 +223,7 @@ func ParseIndexFile(taskDir string) (ParsedIndexMetadata, error) {
 		return ParsedIndexMetadata{}, err
 	}
 	indexPath := filepath.Join(absDir, "index.md")
-	if err := bfcore.CheckNoReparseChain(absDir, indexPath); err != nil {
+	if err := bfcore.CheckNoReparseChain("", indexPath); err != nil {
 		return ParsedIndexMetadata{}, err
 	}
 	lines, err := readMarkdownLines(indexPath)
@@ -314,6 +314,9 @@ func ParseIndexFile(taskDir string) (ParsedIndexMetadata, error) {
 
 // ExtractIndexTargetRepo extrae la ruta de repositorio destino de index.md con paridad a GengiSWAP.
 func ExtractIndexTargetRepo(indexPath string) (string, error) {
+	if err := bfcore.CheckNoReparseChain("", indexPath); err != nil {
+		return "", err
+	}
 	lines, err := readMarkdownLines(indexPath)
 	if err != nil {
 		return "", err
@@ -671,6 +674,9 @@ func sanitizeRepoCandidate(raw string) string {
 }
 
 func parseChunkFile(chunkPath, targetRepo string) (RingChunk, error) {
+	if err := bfcore.CheckNoReparseChain("", chunkPath); err != nil {
+		return RingChunk{}, err
+	}
 	lines, err := readMarkdownLines(chunkPath)
 	if err != nil {
 		return RingChunk{}, err

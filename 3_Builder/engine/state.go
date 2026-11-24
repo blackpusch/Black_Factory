@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,9 +257,6 @@ func LoadSessionStrict(taskStateDir string) (SessionState, error) {
 	if err := bfcore.CheckNoReparseChain("", sessionPath); err != nil {
 		return SessionState{}, err
 	}
-	if err := bfcore.CheckNoReparseChain(taskStateDir, sessionPath); err != nil {
-		return SessionState{}, err
-	}
 	raw, err := ReadFileWithShortRetry(sessionPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -277,7 +275,8 @@ func parseSessionBytesStrict(raw []byte) (SessionState, error) {
 	if err := dec.Decode(&st); err != nil {
 		return SessionState{}, fmt.Errorf("%w: %v", ErrSessionCorrupt, err)
 	}
-	if dec.More() {
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return SessionState{}, fmt.Errorf("%w: contenido JSON adicional inesperado", ErrSessionCorrupt)
 	}
 	if st.SchemaVersion != SchemaVersion ||

@@ -316,6 +316,11 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 			rel := strings.ReplaceAll(e.Path, `\`, "/")
 			untracked = append(untracked, rel)
 			untrackedModes[rel] = byKey[changeKey{path: rel, status: "added"}].Mode
+		case e.XY[0] == 'D' || e.XY[1] == 'D':
+			addDeleted(e.Path)
+			if e.OrigPath != "" {
+				addDeleted(e.OrigPath)
+			}
 		case strings.ContainsAny(e.XY, "R"):
 			if err := addPresent(e.Path, "renamed"); err != nil {
 				return WorktreeSnapshot{}, err
@@ -327,8 +332,6 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 			if err := addPresent(e.Path, "added"); err != nil {
 				return WorktreeSnapshot{}, err
 			}
-		case e.XY[0] == 'D' || e.XY[1] == 'D':
-			addDeleted(e.Path)
 		case e.XY[0] == 'A' || e.XY[1] == 'A':
 			if err := addPresent(e.Path, "added"); err != nil {
 				return WorktreeSnapshot{}, err

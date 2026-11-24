@@ -237,10 +237,15 @@ func TestStateG4LocksSessionLoadAndEvents(t *testing.T) {
 		t.Fatalf("LoadSessionStrict failed: %+v (%v)", loaded, err)
 	}
 
-	// Unknown field in session.json must fail strict parsing
+	// Unknown field or trailing JSON object in session.json must fail strict parsing
 	_ = WriteFileAtomicBytes(filepath.Join(taskStateDir, "session.json"), []byte(`{"schema_version":"1.0","task_id":"task_1","extra":1}`))
 	if _, err := LoadSessionStrict(taskStateDir); !errors.Is(err, ErrSessionCorrupt) {
 		t.Fatalf("expected ErrSessionCorrupt on unknown field, got %v", err)
+	}
+	trailingPayload := `{"schema_version":"1.0","task_id":"task_1","build_branch":"build/task_1","repo_root_sha256":"` + sha + `","worktree_path_sha256":"` + sha + `","active_attempt":1,"worktree_status":"active"}{"extra":1}`
+	_ = WriteFileAtomicBytes(filepath.Join(taskStateDir, "session.json"), []byte(trailingPayload))
+	if _, err := LoadSessionStrict(taskStateDir); !errors.Is(err, ErrSessionCorrupt) {
+		t.Fatalf("expected ErrSessionCorrupt on trailing JSON object, got %v", err)
 	}
 
 	// AppendEvent sanitizes Tier 2 and Tier 1
@@ -639,5 +644,23 @@ func TestGitWorktreeForbiddenModes120000And160000AndRawModePrecedence(t *testing
 	}
 	if len(snap.ChangedFiles) != 1 || snap.ChangedFiles[0].Mode != "0644" {
 		t.Fatalf("expected rawModes 0644 precedence, got %+v", snap.ChangedFiles)
+	}
+
+	// Porcelain RD (renamed in index, deleted in worktree) marks both deleted
+	gcRD := stubGitModesClient{
+		porcelainZ: []byte("RD new.txt\x00old.txt\x00"),
+	}
+	snapRD, err := ComputeWorktreeSnapshot(ctx, gcRD, repo, repo, strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatalf("ComputeWorktreeSnapshot(RD): %v", err)
+	}
+	if len(snapRD.ChangedFiles) != 2 || snapRD.ChangedFiles[0].Status != "deleted" || snapRD.ChangedFiles[1].Status != "deleted" {
+		t.Fatalf("expected both RD paths marked deleted, got %+v", snapRD.ChangedFiles)
+	}
+
+	// Untracked diff helper respects mode "0755"
+	uDiff, err := buildUntrackedUnifiedDiff(repo, "script.sh", "0755")
+	if err != nil || !strings.Contains(uDiff, "new file mode 100755") {
+		t.Fatalf("expected new file mode 100755 in untracked diff, got %q (%v)", uDiff, err)
 	}
 }
