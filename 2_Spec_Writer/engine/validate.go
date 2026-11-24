@@ -22,6 +22,7 @@ import (
 
 var (
 	reUnitID           = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{1,47}$`)
+	reStepOrAcceptID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$`)
 	reGoTestRunPattern = regexp.MustCompile(`^[A-Za-z0-9_$./-]+$`)
 	reGoTestTimeout    = regexp.MustCompile(`^([1-9][0-9]{0,2})s$`)
 	reMarkdownHeading  = regexp.MustCompile(`^#{1,6}\s+`)
@@ -245,7 +246,7 @@ func Validate(opts ValidateOptions) (CLIResult, int) {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 	}
 	if g4Hits, jsonErr := ScanRawAndDecodedG4(specBytes); len(g4Hits) > 0 {
-		safePtr := pointerOrRoot(bfcore.RedactAllG4(g4Hits[0].Field))
+		safePtr := sanitizeG4Pointer(g4Hits[0].Field)
 		detail := fmt.Sprintf("regla %s en %s", g4Hits[0].Rule, safePtr)
 		consumeStageAttempt(ExitG4, ReasonG4Violation, "", "", detail)
 		return failResult(ExitG4, ReasonG4Violation, "", "", 0, "", []ValidationIssue{{
@@ -803,10 +804,17 @@ func ValidateSpecAndRenderCheck(
 		checkIndexProseSafety(d, fmt.Sprintf("/dod/%d", i), addIssue)
 	}
 	for i, bf := range spec.BrainFollowups {
+		bfPtr := fmt.Sprintf("/brain_followups/%d", i)
 		if strings.TrimSpace(bf.TargetHint) == "" || strings.TrimSpace(bf.Summary) == "" || strings.TrimSpace(bf.Trigger) == "" {
-			addIssue(fmt.Sprintf("/brain_followups/%d", i), ReasonValidationFailed, "brain_followup requiere target_hint, summary y trigger")
+			addIssue(bfPtr, ReasonValidationFailed, "brain_followup requiere target_hint, summary y trigger")
 		}
-		checkIndexProseSafety(bf.TargetHint+" "+bf.Summary+" "+bf.Trigger, fmt.Sprintf("/brain_followups/%d", i), addIssue)
+		if hasLineBreak(bf.TargetHint) || hasLineBreak(bf.Trigger) || hasLineBreak(bf.Summary) {
+			addIssue(bfPtr, ReasonValidationFailed, "brain_followup target_hint, trigger y summary deben ser de una sola linea")
+		}
+		checkIndexProseSafety(bf.TargetHint, bfPtr+"/target_hint", addIssue)
+		checkIndexProseSafety(bf.Trigger, bfPtr+"/trigger", addIssue)
+		checkIndexProseSafety(bf.Summary, bfPtr+"/summary", addIssue)
+		checkIndexProseSafety(fmt.Sprintf("- **%s** (%s): %s", bf.TargetHint, bf.Trigger, bf.Summary), bfPtr, addIssue)
 	}
 
 	// 4. Rutas de alcance restrictivo (read_only_paths, global_forbidden)
@@ -849,6 +857,8 @@ func ValidateSpecAndRenderCheck(
 		}
 		if strings.TrimSpace(u.Title) == "" || len(u.Title) > 120 || hasLineBreak(u.Title) {
 			addIssue(uPtr+"/title", ReasonValidationFailed, "work_unit.title obligatorio (1..120 chars, una sola linea)")
+		} else {
+			checkIndexProseSafety(u.Title, uPtr+"/title", addIssue)
 		}
 		if strings.TrimSpace(u.Objective) == "" {
 			addIssue(uPtr+"/objective", ReasonValidationFailed, "work_unit.objective obligatorio")
@@ -931,8 +941,8 @@ func ValidateSpecAndRenderCheck(
 		unitVerifyIDs := make(map[string]bool, len(u.VerifySteps))
 		for j, vs := range u.VerifySteps {
 			vsPtr := fmt.Sprintf("%s/verify_steps/%d", uPtr, j)
-			if strings.TrimSpace(vs.ID) == "" {
-				addIssue(vsPtr+"/id", ReasonValidationFailed, "verify_step.id obligatorio")
+			if !reStepOrAcceptID.MatchString(vs.ID) {
+				addIssue(vsPtr+"/id", ReasonValidationFailed, fmt.Sprintf("verify_step.id %q invalido (patron ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$)", vs.ID))
 			} else if prevUnit, dup := globalVerifyIDs[vs.ID]; dup {
 				addIssue(vsPtr+"/id", ReasonValidationFailed, fmt.Sprintf("verify_step.id %q duplicado (ya usado en %s)", vs.ID, prevUnit))
 			} else {
@@ -949,8 +959,8 @@ func ValidateSpecAndRenderCheck(
 		}
 		for j, ac := range u.AcceptanceCriteria {
 			acPtr := fmt.Sprintf("%s/acceptance_criteria/%d", uPtr, j)
-			if strings.TrimSpace(ac.ID) == "" {
-				addIssue(acPtr+"/id", ReasonValidationFailed, "acceptance_criterion.id obligatorio")
+			if !reStepOrAcceptID.MatchString(ac.ID) {
+				addIssue(acPtr+"/id", ReasonValidationFailed, fmt.Sprintf("acceptance_criterion.id %q invalido (patron ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$)", ac.ID))
 			} else if _, dup := globalAcceptKind[ac.ID]; dup {
 				addIssue(acPtr+"/id", ReasonValidationFailed, fmt.Sprintf("acceptance_criterion.id duplicado %q", ac.ID))
 			} else {
@@ -2258,7 +2268,7 @@ func renderGengisTaskInMemory(
 		}
 		renderedChunks = append(renderedChunks, RenderedChunk{
 			Filename: chunkID + ".md",
-			Content:  cBuf.String(),
+			Content:  strings.ReplaceAll(cBuf.String(), "\r\n", "\n"),
 		})
 	}
 
@@ -2301,8 +2311,8 @@ func renderGengisTaskInMemory(
 	}
 
 	return RenderedTaskFiles{
-		IndexMD:  idxBuf.String(),
-		StatusMD: stBuf.String(),
+		IndexMD:  strings.ReplaceAll(idxBuf.String(), "\r\n", "\n"),
+		StatusMD: strings.ReplaceAll(stBuf.String(), "\r\n", "\n"),
 		Chunks:   renderedChunks,
 	}, nil
 }
@@ -2319,14 +2329,15 @@ func formatBacktickedList(items []string, emptyWord string) string {
 }
 
 // verifyRenderedGengisParity ejecuta el superconjunto en memoria de validateChunks (GengiSWAP/engine/ring.go:393-426)
-// verificando que el Markdown compilado preserve todas las secciones obligatorias de index.md y chunks/*.md.
+// verificando que el Markdown compilado preserve la estructura exacta de index.md y chunks/*.md sin inyecciones.
 func verifyRenderedGengisParity(r RenderedTaskFiles) []ValidationIssue {
 	var issues []ValidationIssue
-	if !strings.Contains(r.IndexMD, "## Alcance") || !strings.Contains(r.IndexMD, "- **Repositorio destino:** <TARGET_REPO>") {
+	indexLF := strings.ReplaceAll(r.IndexMD, "\r\n", "\n")
+	if !strings.Contains(indexLF, "## Alcance") || strings.Count(indexLF, "\n- **Repositorio destino:** <TARGET_REPO>\n") != 1 {
 		issues = append(issues, ValidationIssue{
 			Pointer: "/render/index",
 			Code:    ReasonValidationFailed,
-			Message: "index.md renderizado carece de ## Alcance o marcador <TARGET_REPO>",
+			Message: "index.md renderizado carece de ## Alcance o de exactamente un marcador de linea <TARGET_REPO>",
 		})
 	}
 	if len(r.Chunks) == 0 {
@@ -2337,25 +2348,90 @@ func verifyRenderedGengisParity(r RenderedTaskFiles) []ValidationIssue {
 		})
 		return issues
 	}
+	expectedChunkH2 := []string{
+		"## Objetivo",
+		"## Entradas",
+		"## Puede modificar",
+		"## Fuera de Alcance",
+		"## Criterios de Aceptación",
+		"## Comando de Verificación",
+		"## Prueba de que puede fallar",
+	}
 	seenIDs := make(map[string]bool, len(r.Chunks))
 	for i, ch := range r.Chunks {
+		cPtr := fmt.Sprintf("/render/chunks/%d", i)
 		id := strings.TrimSuffix(ch.Filename, ".md")
 		if id == "" || seenIDs[id] {
 			issues = append(issues, ValidationIssue{
-				Pointer: fmt.Sprintf("/render/chunks/%d", i),
+				Pointer: cPtr,
 				Code:    ReasonValidationFailed,
 				Message: fmt.Sprintf("chunk ID vacio o duplicado %q", id),
 			})
 		}
 		seenIDs[id] = true
-		for _, requiredH2 := range []string{"## Objetivo", "## Puede modificar", "## Criterios de Aceptación", "## Comando de Verificación", "## Prueba de que puede fallar"} {
-			if !strings.Contains(ch.Content, requiredH2) {
-				issues = append(issues, ValidationIssue{
-					Pointer: fmt.Sprintf("/render/chunks/%d", i),
-					Code:    ReasonValidationFailed,
-					Message: fmt.Sprintf("chunk %s carece de seccion obligatoria %s", ch.Filename, requiredH2),
-				})
+
+		contentLF := strings.ReplaceAll(ch.Content, "\r\n", "\n")
+		lines := strings.Split(contentLF, "\n")
+		var seenH2 []string
+		inFence := false
+		currentH2 := ""
+		cmdFenceCount := 0
+		for _, ln := range lines {
+			trimmed := strings.TrimSpace(ln)
+			if strings.HasPrefix(trimmed, "```") {
+				if !inFence {
+					inFence = true
+					if currentH2 != "## Comando de Verificación" || trimmed != "```cmd" {
+						issues = append(issues, ValidationIssue{
+							Pointer: cPtr,
+							Code:    ReasonValidationFailed,
+							Message: fmt.Sprintf("chunk %s contiene bloque fenced inesperado %q bajo %q", ch.Filename, trimmed, currentH2),
+						})
+					} else {
+						cmdFenceCount++
+					}
+				} else {
+					inFence = false
+					if trimmed != "```" {
+						issues = append(issues, ValidationIssue{
+							Pointer: cPtr,
+							Code:    ReasonValidationFailed,
+							Message: fmt.Sprintf("chunk %s cierra bloque fenced con linea inesperada %q", ch.Filename, trimmed),
+						})
+					}
+				}
+				continue
 			}
+			if inFence {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "## ") {
+				currentH2 = trimmed
+				seenH2 = append(seenH2, trimmed)
+			}
+		}
+		if inFence || cmdFenceCount != 1 {
+			issues = append(issues, ValidationIssue{
+				Pointer: cPtr,
+				Code:    ReasonValidationFailed,
+				Message: fmt.Sprintf("chunk %s debe tener exactamente 1 bloque ```cmd cerrado (detectados=%d, abierto=%v)", ch.Filename, cmdFenceCount, inFence),
+			})
+		}
+		h2Mismatch := len(seenH2) != len(expectedChunkH2)
+		if !h2Mismatch {
+			for k := range expectedChunkH2 {
+				if seenH2[k] != expectedChunkH2[k] {
+					h2Mismatch = true
+					break
+				}
+			}
+		}
+		if h2Mismatch {
+			issues = append(issues, ValidationIssue{
+				Pointer: cPtr,
+				Code:    ReasonValidationFailed,
+				Message: fmt.Sprintf("chunk %s altera la secuencia exacta de encabezados H2 de la plantilla (detectados: %v)", ch.Filename, seenH2),
+			})
 		}
 	}
 	return issues
@@ -2486,6 +2562,19 @@ func pointerOrRoot(ptr string) string {
 		return "/"
 	}
 	return ptr
+}
+
+func sanitizeG4Pointer(ptr string) string {
+	if strings.TrimSpace(ptr) == "" {
+		return "/"
+	}
+	parts := strings.Split(ptr, "/")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = bfcore.RedactAllG4(p)
+		}
+	}
+	return pointerOrRoot(bfcore.RedactAllG4(strings.Join(parts, "/")))
 }
 
 func failResult(code int, reason, traceID, specSHA string, lastExit int, lastReason string, issues []ValidationIssue) (CLIResult, int) {

@@ -182,7 +182,7 @@ func Compile(opts CompileOptions) (CLIResult, int) {
 		return failResult(ExitInfraOrRefusal, ReasonIOError, "", "", 0, "", nil)
 	}
 	if g4Hits, jsonErr := ScanRawAndDecodedG4(specBytes); len(g4Hits) > 0 {
-		safePtr := pointerOrRoot(bfcore.RedactAllG4(g4Hits[0].Field))
+		safePtr := sanitizeG4Pointer(g4Hits[0].Field)
 		return failResult(ExitG4, ReasonG4Violation, "", "", 0, "", []ValidationIssue{{
 			Pointer: safePtr,
 			Code:    ReasonG4Violation,

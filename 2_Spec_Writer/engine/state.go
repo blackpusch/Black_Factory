@@ -156,8 +156,9 @@ func LoadAttemptsStrict(wiDir string) (AttemptsState, error) {
 }
 
 func parseAttemptsBytesStrict(raw []byte) (AttemptsState, error) {
+	cleaned := bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
 	var st AttemptsState
-	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec := json.NewDecoder(bytes.NewReader(cleaned))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&st); err != nil {
 		return AttemptsState{}, fmt.Errorf("%w: %v", ErrAttemptsCorrupt, err)

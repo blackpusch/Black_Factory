@@ -1,6 +1,7 @@
 package specwriter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,7 +103,7 @@ func Prepare(opts PrepareOptions) (PrepareResult, int) {
 	}
 
 	var wi WorkItemInput
-	if err := json.Unmarshal(wiRaw, &wi); err != nil {
+	if err := json.Unmarshal(bytes.TrimPrefix(wiRaw, []byte{0xef, 0xbb, 0xbf}), &wi); err != nil {
 		return fail(ExitUsage, ReasonInvalidUsage, fmt.Sprintf("decodificando WorkItem: %v", err), "", "")
 	}
 
@@ -450,8 +451,8 @@ func validateWorkItemForPrepare(wi WorkItemInput, repoRoot string) ([]string, st
 	if !reHex64.MatchString(wi.Sanitization.SanitizedPayloadSHA256) {
 		return nil, "WorkItem sanitized_payload_sha256 invalido"
 	}
-	if strings.TrimSpace(wi.TraceID) == "" {
-		return nil, "WorkItem trace_id vacio"
+	if strings.TrimSpace(wi.TraceID) == "" || hasLineBreak(wi.TraceID) {
+		return nil, "WorkItem trace_id vacio o multilinea"
 	}
 	slug := strings.ToLower(strings.TrimSpace(wi.Project))
 	if !reProjectSlug.MatchString(slug) || strings.Contains(slug, "..") {
