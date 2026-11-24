@@ -643,9 +643,27 @@ func TestBrainClient_PreflightMultiWrap_AndSharedHelpers(t *testing.T) {
 		t.Fatalf("Preflight con .brain-journal.json violo contrato multi-wrap: %v", err)
 	}
 
-	// 5. Context y ExecBrain con binario faltante -> ErrBrainUnavailable
+	// 5. Context y ExecBrain con binario faltante -> ErrBrainUnavailable sin fugas G4 en el error
 	if _, inv, err := client.Context(vaultDir, dbPath, "black-factory", []string{"a.go"}); !errors.Is(err, ErrBrainUnavailable) || inv.ExitCode != -1 {
 		t.Fatalf("Context con binario ausente debia retornar ErrBrainUnavailable y ExitCode=-1: inv=%+v err=%v", inv, err)
+	} else if findings := ScanG4All(err.Error()); len(findings) != 0 {
+		t.Fatalf("error de ExecBrain filtro ruta G4: %q (%+v)", err.Error(), findings)
+	}
+
+	// 5b. Guarda de receptor nil y rechazo de directorio como binario en ExecBrain
+	var nilClient *SubprocessBrainClient
+	if _, err := nilClient.Preflight(vaultDir, dbPath); !errors.Is(err, ErrBrainUnavailable) {
+		t.Fatalf("nilClient.Preflight debia retornar ErrBrainUnavailable sin panic: %v", err)
+	}
+	if _, inv, err := nilClient.Context(vaultDir, dbPath, "black-factory", []string{"a.go"}); !errors.Is(err, ErrBrainUnavailable) || inv.ExitCode != -1 {
+		t.Fatalf("nilClient.Context debia retornar ErrBrainUnavailable sin panic: inv=%+v err=%v", inv, err)
+	}
+	if _, inv, err := nilClient.ExecBrain([]string{"context"}); !errors.Is(err, ErrBrainUnavailable) || inv.ExitCode != -1 {
+		t.Fatalf("nilClient.ExecBrain debia retornar ErrBrainUnavailable sin panic: inv=%+v err=%v", inv, err)
+	}
+	dirClient := NewSubprocessBrainClient(vaultDir, 0)
+	if _, inv, err := dirClient.ExecBrain([]string{"context"}); !errors.Is(err, ErrBrainUnavailable) || inv.ExitCode != -1 {
+		t.Fatalf("ExecBrain sobre directorio debia retornar ErrBrainUnavailable: inv=%+v err=%v", inv, err)
 	}
 
 	// 6. Subproceso real si 0_Brain/brain.exe y 0_Brain/vault/.index/brain.db existen en el repo local

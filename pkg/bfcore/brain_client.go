@@ -108,6 +108,9 @@ func NewSubprocessBrainClient(brainBin string, timeout time.Duration) *Subproces
 //  3. Comprueba os.Lstat sobre <vaultRoot>/.brain-journal.json. Si existe, devuelve multi-wrap ErrBrainUnavailable + ErrBrainJournalActive
 //     sin invocar brain.exe verify (evitando disparar RecoverJournal que mutaria la boveda).
 func (c *SubprocessBrainClient) Preflight(vaultRoot, dbPath string) (BrainPreflight, error) {
+	if c == nil {
+		return BrainPreflight{}, fmt.Errorf("%w: cliente brain nil", ErrBrainUnavailable)
+	}
 	if strings.TrimSpace(vaultRoot) == "" {
 		return BrainPreflight{}, fmt.Errorf("%w: ruta de boveda vacia", ErrBrainUnavailable)
 	}
@@ -116,28 +119,30 @@ func (c *SubprocessBrainClient) Preflight(vaultRoot, dbPath string) (BrainPrefli
 	}
 
 	if err := CheckNoReparseChain("", vaultRoot); err != nil {
-		return BrainPreflight{}, fmt.Errorf("%w: reparse point en boveda: %v", ErrBrainUnavailable, err)
+		return BrainPreflight{}, fmt.Errorf("%w: reparse point en boveda: %s", ErrBrainUnavailable, RedactAllG4(err.Error()))
 	}
 	if err := CheckNoReparseChain(vaultRoot, dbPath); err != nil {
-		return BrainPreflight{}, fmt.Errorf("%w: reparse point en brain.db: %v", ErrBrainUnavailable, err)
+		return BrainPreflight{}, fmt.Errorf("%w: reparse point en brain.db: %s", ErrBrainUnavailable, RedactAllG4(err.Error()))
 	}
 
+	dbDisplay := RedactAllG4(filepath.ToSlash(dbPath))
 	fiDB, err := os.Lstat(dbPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return BrainPreflight{}, fmt.Errorf("%w: %w: %s (ejecute '0_Brain/brain.exe index')", ErrBrainUnavailable, ErrBrainIndexMissing, dbPath)
+			return BrainPreflight{}, fmt.Errorf("%w: %w: %s (ejecute '0_Brain/brain.exe index')", ErrBrainUnavailable, ErrBrainIndexMissing, dbDisplay)
 		}
-		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %v", ErrBrainUnavailable, dbPath, err)
+		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %s", ErrBrainUnavailable, dbDisplay, RedactAllG4(err.Error()))
 	}
-	if fiDB.IsDir() || IsReparseOrSymlink(fiDB) {
-		return BrainPreflight{}, fmt.Errorf("%w: %s no es un archivo regular", ErrBrainUnavailable, dbPath)
+	if fiDB.IsDir() || IsReparseOrSymlink(fiDB) || !fiDB.Mode().IsRegular() {
+		return BrainPreflight{}, fmt.Errorf("%w: %s no es un archivo regular", ErrBrainUnavailable, dbDisplay)
 	}
 
 	journalPath := filepath.Join(vaultRoot, ".brain-journal.json")
+	journalDisplay := RedactAllG4(filepath.ToSlash(journalPath))
 	if _, jErr := os.Lstat(journalPath); jErr == nil {
-		return BrainPreflight{}, fmt.Errorf("%w: %w: diario pendiente %s detectado (NG2 read-only: ejecute '0_Brain/brain.exe verify' manualmente)", ErrBrainUnavailable, ErrBrainJournalActive, journalPath)
+		return BrainPreflight{}, fmt.Errorf("%w: %w: diario pendiente %s detectado (NG2 read-only: ejecute '0_Brain/brain.exe verify' manualmente)", ErrBrainUnavailable, ErrBrainJournalActive, journalDisplay)
 	} else if !errors.Is(jErr, os.ErrNotExist) {
-		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %v", ErrBrainUnavailable, journalPath, jErr)
+		return BrainPreflight{}, fmt.Errorf("%w: inspeccionando %s: %s", ErrBrainUnavailable, journalDisplay, RedactAllG4(jErr.Error()))
 	}
 
 	return BrainPreflight{
@@ -150,6 +155,9 @@ func (c *SubprocessBrainClient) Preflight(vaultRoot, dbPath string) (BrainPrefli
 // Context invoca 0_Brain/brain.exe context --vault <v> --db <db> --project <p> --files <csv> --json
 // y extrae los documentos activos junto con los risk_hits estructurados de wiki/risk_zones.md.
 func (c *SubprocessBrainClient) Context(vaultRoot, dbPath, project string, files []string) (BrainContextResponse, BrainInvocation, error) {
+	if c == nil {
+		return BrainContextResponse{}, BrainInvocation{ExitCode: -1}, fmt.Errorf("%w: cliente brain nil", ErrBrainUnavailable)
+	}
 	if strings.TrimSpace(dbPath) == "" {
 		dbPath = filepath.Join(vaultRoot, ".index", "brain.db")
 	}
@@ -208,16 +216,28 @@ func (c *SubprocessBrainClient) Context(vaultRoot, dbPath, project string, files
 	return resp, inv, nil
 }
 
-// ExecBrain ejecuta el binario configurado de 0_Brain con timeout y redaccion Tier 2 del comando registrado.
+// ExecBrain ejecuta el binario configurado de 0_Brain con timeout y redaccion G4 del comando y errores.
 func (c *SubprocessBrainClient) ExecBrain(args []string) ([]byte, BrainInvocation, error) {
+	if c == nil {
+		return nil, BrainInvocation{ExitCode: -1}, fmt.Errorf("%w: cliente brain nil", ErrBrainUnavailable)
+	}
 	bin := strings.TrimSpace(c.BrainBin)
 	if bin == "" {
 		bin = filepath.Join("0_Brain", "brain.exe")
 	}
 	cmdStr := formatCommandDisplay(bin, args)
 	cmdStr, _ = RedactTier2Text("command", cmdStr)
-	if _, err := os.Stat(bin); err != nil {
-		return nil, BrainInvocation{Command: cmdStr, ExitCode: -1}, fmt.Errorf("%w: binario brain.exe no encontrado en %s: %v", ErrBrainUnavailable, bin, err)
+	binDisplay := RedactAllG4(filepath.ToSlash(bin))
+
+	if err := CheckNoReparseChain("", bin); err != nil {
+		return nil, BrainInvocation{Command: cmdStr, ExitCode: -1}, fmt.Errorf("%w: reparse point en binario %s: %s", ErrBrainUnavailable, binDisplay, RedactAllG4(err.Error()))
+	}
+	fiBin, err := os.Lstat(bin)
+	if err != nil {
+		return nil, BrainInvocation{Command: cmdStr, ExitCode: -1}, fmt.Errorf("%w: binario brain.exe no encontrado en %s: %s", ErrBrainUnavailable, binDisplay, RedactAllG4(err.Error()))
+	}
+	if fiBin.IsDir() || IsReparseOrSymlink(fiBin) || !fiBin.Mode().IsRegular() {
+		return nil, BrainInvocation{Command: cmdStr, ExitCode: -1}, fmt.Errorf("%w: binario %s no es un archivo regular", ErrBrainUnavailable, binDisplay)
 	}
 
 	timeout := c.Timeout
@@ -232,7 +252,7 @@ func (c *SubprocessBrainClient) ExecBrain(args []string) ([]byte, BrainInvocatio
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	dur := time.Since(start).Milliseconds()
 
 	exitCode := 0
@@ -244,7 +264,9 @@ func (c *SubprocessBrainClient) ExecBrain(args []string) ([]byte, BrainInvocatio
 			exitCode = -1
 		}
 		inv := BrainInvocation{Command: cmdStr, ExitCode: exitCode, DurationMs: dur}
-		return nil, inv, fmt.Errorf("%w: comando %q fallo (exit=%d): %v (%s)", ErrBrainUnavailable, cmdStr, exitCode, err, strings.TrimSpace(stderr.String()))
+		errMsg := RedactAllG4(err.Error())
+		stderrMsg := RedactAllG4(strings.TrimSpace(stderr.String()))
+		return nil, inv, fmt.Errorf("%w: comando %q fallo (exit=%d): %s (%s)", ErrBrainUnavailable, cmdStr, exitCode, errMsg, stderrMsg)
 	}
 
 	return stdout.Bytes(), BrainInvocation{Command: cmdStr, ExitCode: 0, DurationMs: dur}, nil
