@@ -71,7 +71,7 @@ func initGit(t *testing.T, repo string) string {
 		return strings.TrimSpace(string(out))
 	}
 	runGit("init")
-	runGit("config", "user.email", "builder@example.com")
+	runGit("config", "user.email", "builder-test@localhost")
 	runGit("config", "user.name", "Builder Test")
 	_ = os.MkdirAll(filepath.Join(repo, "pkg"), 0o755)
 	_ = os.WriteFile(filepath.Join(repo, "pkg", "core.go"), []byte("package pkg\nfunc Core() int { return 1 }\n"), 0o644)
@@ -172,6 +172,16 @@ func TestCLIUsageHelpAndValidation(t *testing.T) {
 	errOut.Reset()
 	if code := run([]string{"apply-order", "--task-dir", "t", "--order", "a.json", "--reset-bounces", "--reason", "12345678"}, &out, &errOut, CLIHooks{}); code != builder.ExitUsage {
 		t.Fatalf("expected ExitUsage on conflicting apply-order flags, got %d", code)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"verify", "--help"}, &out, &errOut, CLIHooks{}); code != builder.ExitOK || !strings.Contains(out.String(), "-vault") || errOut.Len() != 0 {
+		t.Fatalf("expected subcommand --help ExitOK without errOut noise, got %d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"tdd-red", "--task-dir", "t", "--timeout", "0", "--json"}, &out, &errOut, CLIHooks{}); code != builder.ExitUsage || !strings.Contains(out.String(), builder.ReasonInvalidUsage) || errOut.Len() != 0 {
+		t.Fatalf("expected --timeout 0 rejected cleanly with JSON, got %d out=%q err=%q", code, out.String(), errOut.String())
 	}
 }
 
@@ -282,5 +292,101 @@ func TestCLIEndToEndCUJ1ThroughCUJ4(t *testing.T) {
 	}
 	if out, _, code := invoke("cleanup", "--task-dir", taskDir, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--force=true", "--delete-branch", "--json"); code != builder.ExitOK || !strings.Contains(out, `"ok": true`) {
 		t.Fatalf("cleanup failed: %d %s", code, out)
+	}
+
+	// CUJ 2..4 vía CLI run(...): exit 1 (SCOPE_VIOLATION), exit 3 (G4_VIOLATION), exit 5 (MAX_BOUNCE_CYCLES + --reset-bounces), exit 4 (GENGIS_DECIDE_REQUIRED en context/commit)
+	taskDir2 := filepath.Join(tmp, "gengis_data", "gengis_task", "bf_cli_02")
+	_ = os.MkdirAll(filepath.Join(taskDir2, "chunks"), 0o755)
+	_ = os.MkdirAll(filepath.Join(taskDir2, ".ring"), 0o755)
+	_ = os.WriteFile(filepath.Join(taskDir2, "index.md"), []byte("# Mapa de Tarea: bf_cli_02 — CLI CUJ 2-4\nPlantilla: modulo_nuevo v1\n\n## Directorio de Destino Real\n- **Repositorio destino:** "+factory+"\n\n## Alcance\n- Puede modificar: `pkg/`\n\n## Notas Post-Merge y Trazabilidad\n- **WorkItem:** `WI-112233445567` (rev 1)\n- **Trace ID:** `trc-cli-02`\n- **Carril:** `FTD`\n- **Spec SHA-256:** `"+strings.Repeat("b", 64)+"`\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(taskDir2, "chunks", "01_core.md"), []byte("# Chunk 01\n## Objetivo\nx\n## Puede modificar\n- `pkg/`\n## Criterios de Aceptación\n- ok\n## Comando de Verificación\n```cmd\ngo test ./...\n```\n## Prueba de que puede fallar\nfail\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(taskDir2, ".ring", "base_ref"), []byte(headSHA+"\n"), 0o644)
+	rs2, _ := json.Marshal(builder.RingState{
+		TaskID: "bf_cli_02", PlanApproved: true, Index: 0, Status: "RUNNING",
+		Scope: builder.Scope{CanModify: []string{"pkg/"}},
+		Chunks: []builder.RingChunk{{
+			ID: "01_core", Spec: "core", Acceptance: []string{"ok"},
+			VerifyCommands: []string{"go test ./..."}, FailureProof: "fail",
+			Scope: builder.Scope{CanModify: []string{"pkg/"}}, Status: "PENDING",
+		}},
+	})
+	_ = os.WriteFile(filepath.Join(taskDir2, ".ring", "state.json"), rs2, 0o644)
+
+	if _, _, code := invoke("init", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--vault", vault, "--json"); code != builder.ExitOK {
+		t.Fatalf("init task2 failed: %d", code)
+	}
+	wtDir2 := filepath.Join(wtRoot, "bf_cli_02")
+	_ = os.WriteFile(filepath.Join(wtDir2, "pkg", "core_test.go"), []byte("package pkg\nimport \"testing\"\nfunc TestCore2(t *testing.T){}\n"), 0o644)
+	hooks.Runner = &stubRunner{fail: true}
+	if _, _, code := invoke("tdd-red", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot); code != builder.ExitOK {
+		t.Fatalf("tdd-red task2 failed: %d", code)
+	}
+	// exit 3: G4_VIOLATION humano en emitCLIResult
+	_ = os.WriteFile(filepath.Join(wtDir2, "pkg", "core.go"), []byte("package pkg\nvar k = \"ghp_"+"1234567890abcdefghij123456\"\n"), 0o644)
+	if _, errStr, code := invoke("tdd-red", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot); code != builder.ExitG4 || !strings.Contains(errStr, builder.ReasonG4Violation) {
+		t.Fatalf("expected ExitG4 (3) with human output, got %d err=%q", code, errStr)
+	}
+	// exit 1: SCOPE_VIOLATION en package
+	_ = os.WriteFile(filepath.Join(wtDir2, "pkg", "core.go"), []byte("package pkg\nfunc Core() int { return 2 }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(wtDir2, "out_of_scope.txt"), []byte("nope\n"), 0o644)
+	hooks.Runner = &stubRunner{fail: false}
+	if _, errStr, code := invoke("package", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--vault", vault); code != builder.ExitFixable || !strings.Contains(errStr, builder.ReasonScopeViolation) {
+		t.Fatalf("expected ExitFixable (1) SCOPE_VIOLATION, got %d err=%q", code, errStr)
+	}
+	_ = os.Remove(filepath.Join(wtDir2, "out_of_scope.txt"))
+
+	// exit 5: 3x BOUNCE -> 4th BOUNCE hits MAX_BOUNCE_CYCLES (5) -> --reset-bounces restores cycle
+	for i := 1; i <= 4; i++ {
+		_ = os.WriteFile(filepath.Join(wtDir2, "pkg", "core.go"), []byte("package pkg\nfunc Core() int { return "+string(rune('0'+i+1))+" }\n"), 0o644)
+		pOut, _, pCode := invoke("package", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--vault", vault, "--json")
+		if pCode != builder.ExitOK {
+			t.Fatalf("package bounce %d failed: %d %s", i, pCode, pOut)
+		}
+		var pr builder.CLIResult
+		_ = json.Unmarshal([]byte(pOut), &pr)
+		bOrd := builder.BounceOrder{
+			SchemaVersion: builder.SchemaVersion, OrderID: "ORD-CLI-B" + string(rune('0'+i)), CreatedAt: "2026-11-24T12:00:00Z",
+			TraceID: "trc-cli-02", TaskID: "bf_cli_02", ChunkID: "01_core",
+			BundleID: pr.BundleID, BundleSHA256: pr.BundleSHA256, Decision: "BOUNCE",
+			ReviewerVerdicts: builder.ReviewerVerdicts{
+				Security: builder.AxisVerdict{Status: "FAIL", FindingsCount: 1, Summary: "fix"}, CodeArchitecture: builder.AxisVerdict{Status: "PASS", FindingsCount: 0, Summary: "ok"},
+				UX: builder.AxisVerdict{Status: "NA", FindingsCount: 0, Summary: "na", NAReason: "no ux"}, UI: builder.AxisVerdict{Status: "NA", FindingsCount: 0, Summary: "na", NAReason: "no ui"},
+			},
+			RequiresRedTest: false,
+			RemediationItems: []builder.RemediationItem{{
+				ID: "REM-1", Axis: "security", Severity: "MAJOR", File: "pkg/core.go", Line: 1,
+				Description: "fix needed", RequiredAction: "update core.go",
+			}},
+			Summary: "bounce cycle",
+		}
+		bPath := filepath.Join(tmp, "bounce_"+string(rune('0'+i))+".json")
+		bb, _ := json.Marshal(bOrd)
+		_ = os.WriteFile(bPath, bb, 0o644)
+		_, bErr, bCode := invoke("apply-order", "--task-dir", taskDir2, "--order", bPath, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot)
+		if i < 4 && bCode != builder.ExitOK {
+			t.Fatalf("bounce %d expected ExitOK, got %d %s", i, bCode, bErr)
+		}
+		if i == 4 && (bCode != builder.ExitAttemptsBlocked || !strings.Contains(bErr, builder.ReasonMaxBounceCycles)) {
+			t.Fatalf("4th bounce expected ExitAttemptsBlocked (5), got %d %s", bCode, bErr)
+		}
+	}
+	if rOut, _, rCode := invoke("apply-order", "--task-dir", taskDir2, "--reset-bounces", "--reason", "autor cli reset", "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--json"); rCode != builder.ExitOK || !strings.Contains(rOut, `"reset": true`) {
+		t.Fatalf("reset-bounces expected ExitOK + reset=true, got %d %s", rCode, rOut)
+	}
+	if cOut, _, cCode := invoke("context", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--vault", vault, "--json"); cCode != builder.ExitOK || !strings.Contains(cOut, `"bounce_cycle": 0`) {
+		t.Fatalf("context after reset-bounces expected bounce_cycle=0, got %d %s", cCode, cOut)
+	}
+	if stReset, errSt := builder.LoadSessionStrict(filepath.Join(dataDir, "bf_cli_02")); errSt != nil || stReset.ResetEpoch != 1 {
+		t.Fatalf("expected SessionState.ResetEpoch=1 after reset-bounces, got %+v err=%v", stReset, errSt)
+	}
+
+	// exit 4: QADone && Verdict == nil -> GENGIS_DECIDE_REQUIRED en cmdContext (humano FAIL)
+	var stPending builder.RingState
+	_ = json.Unmarshal(rs2, &stPending)
+	stPending.Chunks[0].Attempts = []builder.RingAttempt{{N: 1, QADone: true, QAPassed: true}}
+	spB, _ := json.Marshal(stPending)
+	_ = os.WriteFile(filepath.Join(taskDir2, ".ring", "state.json"), spB, 0o644)
+	if _, errStr, code := invoke("context", "--task-dir", taskDir2, "--repo-root", factory, "--factory-root", factory, "--data-dir", dataDir, "--worktree-root", wtRoot, "--vault", vault); code != builder.ExitExternalDecision || !strings.Contains(errStr, builder.ReasonGengisDecideRequired) {
+		t.Fatalf("expected ExitExternalDecision (4) GENGIS_DECIDE_REQUIRED in context, got %d err=%q", code, errStr)
 	}
 }

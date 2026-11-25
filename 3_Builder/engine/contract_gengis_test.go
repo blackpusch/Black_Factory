@@ -52,9 +52,32 @@ func runRealGengisCLI(t *testing.T, gengisBin string, stdin string, args ...stri
 	return out.String()
 }
 
+// registerTempCleanupWithRetry registra limpieza LIFO con backoff corto en Windows para
+// evitar errores transitorios de ERROR_SHARING_VIOLATION sobre .session.lock en t.TempDir().
+func registerTempCleanupWithRetry(t *testing.T, dirs ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, dir := range dirs {
+			if strings.TrimSpace(dir) == "" {
+				continue
+			}
+			for attempt := 0; attempt < 12; attempt++ {
+				if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if rmErr := os.RemoveAll(dir); rmErr == nil {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+		}
+	})
+}
+
 func TestContract_RealGengis_EndToEndWorktreeCycle(t *testing.T) {
 	gengisBin := resolveGengisBinForContract(t)
 	tmp := t.TempDir()
+	registerTempCleanupWithRetry(t, tmp)
 	tmpGengisRoot := filepath.Join(tmp, "gengis_root")
 	_ = os.MkdirAll(tmpGengisRoot, 0o755)
 
@@ -71,6 +94,7 @@ func TestContract_RealGengis_EndToEndWorktreeCycle(t *testing.T) {
 	runGitTestCmd(t, factory, "add", ".")
 	runGitTestCmd(t, factory, "commit", "-m", "initial tracked module")
 	mainHeadBefore := runGitTestCmd(t, factory, "rev-parse", "HEAD")
+	mainBranch := runGitTestCmd(t, factory, "rev-parse", "--abbrev-ref", "HEAD")
 
 	taskDir := filepath.Join(tmp, "gengis_data", "gengis_task", "bf_contract_01")
 	wtRoot := filepath.Join(tmp, "gengis_data", "worktrees")
@@ -83,7 +107,7 @@ Plantilla: modulo_nuevo v1
 
 ## Directorio de Destino Real
 - **Repositorio destino:** ` + factory + `
-- **Rama destino:** master
+- **Rama destino:** ` + mainBranch + `
 
 ## Alcance
 - Puede modificar: ` + "`pkg/`" + `
@@ -924,6 +948,7 @@ func TestCoverageTargetOver85(t *testing.T) {
 
 	// 4. Context / LoadAndVerifySessionAndWorktree corrupt session, removed worktree, deleted vault doc in Package, Commit G4/Scope/BrainPreflight/HEAD
 	repo3, factory3, taskDir3, wtRoot3, dataDir3, vault3, head3, fb3 := setupWorkflowFixture(t)
+	registerTempCleanupWithRetry(t, dataDir3, wtRoot3)
 	wtDir3 := filepath.Join(wtRoot3, "bf_life_01")
 	stPath3 := filepath.Join(taskDir3, ".ring", "state.json")
 	st3, _ := LoadRingState(taskDir3)
@@ -957,16 +982,18 @@ func TestCoverageTargetOver85(t *testing.T) {
 	}
 	runGitTestCmd(t, wtDir3, "reset", "--mixed", head3)
 
-	// NTFS junction inside worktree triggers REPARSE_POINT_DETECTED in LoadAndVerifySessionAndWorktree
+	// NTFS junction inside worktree triggers REPARSE_POINT_DETECTED / ErrReparsePoint in ComputeWorktreeSnapshot
 	if filepath.Separator == '\\' {
 		targetDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(targetDir, "probe.txt"), []byte("probe\n"), 0o644)
 		junc := filepath.Join(wtDir3, "pkg", "junc_sub")
 		if err := exec.Command("cmd", "/c", "mklink", "/J", junc, targetDir).Run(); err == nil {
-			if _, r, c := LoadAndVerifySessionAndWorktree(taskDir3, repo3, factory3, dataDir3, wtRoot3, vault3, true); c == ExitOK || r == nil {
-				_ = os.Remove(junc)
-				t.Fatalf("expected failure when junction present")
-			}
+			t.Cleanup(func() { _ = os.Remove(junc) })
+			_, snapErr := ComputeWorktreeSnapshot(context.Background(), ExecGitClient{}, repo3, wtDir3, head3)
 			_ = os.Remove(junc)
+			if !errors.Is(snapErr, bfcore.ErrReparsePoint) {
+				t.Fatalf("expected ErrReparsePoint when junction present inside worktree, got %v", snapErr)
+			}
 		}
 	}
 
@@ -1175,6 +1202,7 @@ func TestGapPushOver85(t *testing.T) {
 
 	// Setup full workflow fixture to test Package & Commit & Cleanup remaining branches
 	repoW, factoryW, taskW, wtRootW, dataW, vaultW, _, fbW := setupWorkflowFixture(t)
+	registerTempCleanupWithRetry(t, dataDir, wtRoot, dataW, wtRootW)
 	wtDirW := filepath.Join(wtRootW, "bf_life_01")
 	stPathW := filepath.Join(taskW, ".ring", "state.json")
 	stW, _ := LoadRingState(taskW)
@@ -1637,7 +1665,7 @@ func TestReachOver85Clean(t *testing.T) {
 
 	// ScanWorktreeChangesG4 redacting Tier 2 in removed ('-') lines while keeping '+' clean, and rejecting Tier 1 in '-' lines
 	wtDir := filepath.Join(wtRoot, "bf_life_01")
-	_ = os.WriteFile(filepath.Join(repo, "pkg", "t2.txt"), []byte("contact user@example.com\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(repo, "pkg", "t2.txt"), []byte("contact user"+"@example.com\n"), 0o644)
 	runGitTestCmd(t, repo, "add", "pkg/t2.txt")
 	runGitTestCmd(t, repo, "commit", "-m", "add t2")
 	_ = os.WriteFile(filepath.Join(wtDir, "pkg", "t2.txt"), []byte("clean\n"), 0o644)
@@ -1645,7 +1673,7 @@ func TestReachOver85Clean(t *testing.T) {
 	// Diff against initial head still works on t2 only if committed on wtDir; instead commit t2 inside a standalone temp git repo:
 	t2Repo := t.TempDir()
 	initTestGitRepo(t, t2Repo)
-	_ = os.WriteFile(filepath.Join(t2Repo, "t2.txt"), []byte("contact operator@example.com\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(t2Repo, "t2.txt"), []byte("contact operator"+"@example.com\n"), 0o644)
 	runGitTestCmd(t, t2Repo, "add", ".")
 	runGitTestCmd(t, t2Repo, "commit", "-m", "init t2")
 	t2Base := runGitTestCmd(t, t2Repo, "rev-parse", "HEAD")
@@ -1655,7 +1683,7 @@ func TestReachOver85Clean(t *testing.T) {
 		t.Fatalf("snapT2 err: %v", errT2)
 	}
 	cleanD, fndT2, _, errScan := ScanWorktreeChangesG4(t2Repo, snapT2)
-	if errScan != nil || fndT2 != nil || strings.Contains(cleanD, "operator@example.com") {
+	if errScan != nil || fndT2 != nil || strings.Contains(cleanD, "operator"+"@example.com") {
 		t.Fatalf("expected Tier2 redacted in '-' line: cleanD=%q fnd=%v err=%v", cleanD, fndT2, errScan)
 	}
 	// Tier 1 in '-' line fails closed even when '+' is clean

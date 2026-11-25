@@ -4,8 +4,10 @@
   "roles": {
     "builder": {
       "team": "3_Builder",
+      "conceptual_reference": "Sonnet/builder",
       "recommended_tier": "reasoning-high",
-      "clean_context": false,
+      "family_constraint": "independent_from_reviewer_security",
+      "clean_context_required": false,
       "responsibilities": [
         "Consultar builder context (Read-Before-Act)",
         "Escribir prueba fallida y validar con builder tdd-red",
@@ -14,8 +16,10 @@
     },
     "reviewer_security": {
       "team": "4_Revisores",
+      "conceptual_reference": "Sol",
       "recommended_tier": "reasoning-high",
-      "clean_context": true,
+      "family_constraint": "different_model_family_from_builder",
+      "clean_context_required": true,
       "applicability": "always",
       "focus": [
         "Fugas G4 (secretos, tokens, llaves, rutas host)",
@@ -24,8 +28,10 @@
     },
     "reviewer_code": {
       "team": "4_Revisores",
+      "conceptual_reference": "Sonnet",
       "recommended_tier": "balanced-fast",
-      "clean_context": true,
+      "family_constraint": "clean_context_worker",
+      "clean_context_required": true,
       "applicability": "always",
       "focus": [
         "Simplicidad, cero duplicacion, manejo de errores y cobertura TDD",
@@ -34,8 +40,10 @@
     },
     "reviewer_ux": {
       "team": "4_Revisores",
+      "conceptual_reference": "Sol",
       "recommended_tier": "balanced",
-      "clean_context": true,
+      "family_constraint": "independent_ux_evaluator",
+      "clean_context_required": true,
       "applicability": "auto_or_cli_include",
       "focus": [
         "Ergonomia CLI, mensajes accionables, contratos JSON/Markdown y documentacion"
@@ -43,8 +51,10 @@
     },
     "reviewer_ui": {
       "team": "4_Revisores",
+      "conceptual_reference": "Astra",
       "recommended_tier": "multimodal-ui",
-      "clean_context": true,
+      "family_constraint": "multimodal_capable",
+      "clean_context_required": true,
       "applicability": "auto_or_cli_include",
       "focus": [
         "Componentes GUI, accesibilidad, estilos, estados visuales y layout"
@@ -52,8 +62,10 @@
     },
     "cycle_approver": {
       "team": "5_Cycle_Approver",
+      "conceptual_reference": "Opus",
       "recommended_tier": "reasoning-high",
-      "clean_context": true,
+      "family_constraint": "independent_approver",
+      "clean_context_required": true,
       "responsibilities": [
         "Consolidar los cuatro dictamenes de 4_Revisores",
         "Emitir BounceOrder v1.0 (APPROVE o BOUNCE) ligado a bundle_id y bundle_sha256",

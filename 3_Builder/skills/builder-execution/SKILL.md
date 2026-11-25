@@ -14,7 +14,7 @@ description: Bucle operativo TDD para ejecutar builder.exe (init, context, tdd-r
 ## 2. Perfiles Agnósticos por Rol
 Las capacidades y asignaciones recomendadas residen en [`profiles.example.json`](./profiles.example.json) (referencia para el arnés externo):
 - `builder` (`3_Builder`): implementa Red -> Green -> Refactor y corre `builder.exe`.
-- `reviewer_security` (`4_Revisores`, contexto limpio, siempre aplicable): audita secretos `G4`, inyecciones, permisos, symlinks/reparse points, escapes shell y límites de alcance.
+- `reviewer_security` (`4_Revisores`, contexto limpio, familia de modelo distinta a `builder`, siempre aplicable): audita secretos `G4`, inyecciones, permisos, symlinks/reparse points, escapes shell y límites de alcance.
 - `reviewer_code` (`4_Revisores`, contexto limpio, siempre aplicable): audita simplicidad, duplicación, cobertura, deuda técnica y cumplimiento del chunk.
 - `reviewer_ux` (`4_Revisores`, contexto limpio, `auto` o `--include-ux`): audita flujos, mensajes de error, CLI, esquemas JSON y fricción operativa.
 - `reviewer_ui` (`4_Revisores`, contexto limpio, `auto` o `--include-ui`): audita componentes visuales, accesibilidad y estilos si hay archivos UI.
@@ -71,5 +71,5 @@ Las capacidades y asignaciones recomendadas residen en [`profiles.example.json`]
 | `2` | `INVALID_USAGE`, `SESSION_ALREADY_EXISTS`, `SESSION_NOT_FOUND`, `TASK_DIR_INVALID`, `CMD_INDEX_OUT_OF_RANGE` | Corregir banderas/rutas o verificar que `builder init` fue ejecutado y `VerifyCommands` sean compatibles con worktree. |
 | `3` | `G4_VIOLATION` | Eliminar de inmediato el secreto, credencial, token o ruta personal en diff/stdout/order antes de reintentar (nunca consume ciclo de rebote). |
 | `4` | `PLAN_NOT_APPROVED`, `STALE_BRAIN_CONTEXT`, `TDD_RED_REQUIRED`, `GENGIS_DECIDE_REQUIRED`, `TASK_TERMINAL_STATE`, `UNEXPECTED_COMMIT_IN_WORKTREE`, `BRANCH_COLLISION` | Escalar o sincronizar: esperar `[AUTOR]` (`plan`/`decide`), correr `builder context --refresh-brain`, ejecutar `builder tdd-red` o revertir commit manual no autorizado en el worktree. |
-| `5` | `MAX_BOUNCE_CYCLES` | Límite de 3 rebotes alcanzado (`BounceBrakeActive == true`). Escalar al `[AUTOR]` y desbloquear explícitamente con `builder.exe apply-order --task-dir "<dir>" --reset-bounces --reason "<motivo >= 8 chars>"`. |
+| `5` | `MAX_BOUNCE_CYCLES` | Límite de 3 rebotes alcanzado (`BounceBrakeActive == true`). Escalar al `[AUTOR]` y desbloquear explícitamente con `builder.exe apply-order --task-dir "<dir>" --repo-root "<repo>" --reset-bounces --reason "<motivo >= 8 chars>"`. |
 | `6` | `BRAIN_JOURNAL_ACTIVE`, `BRAIN_UNAVAILABLE`, `LOCK_BUSY`, `GIT_ERROR`, `GENGIS_UNAVAILABLE`, `REPARSE_POINT_DETECTED`, `GITIGNORE_DRIFT`, `GENGIS_ENGINE_DRIFT`, `SESSION_STATE_CORRUPT`, `ARTIFACT_STATE_CORRUPT` | Detener ejecución. Resolver causa raíz de infraestructura (`0_Brain` journal, cerrojos colgados, integridad de `.gitignore` / `RZ-001`, symlinks/reparse points) y validar con `builder.exe verify --json`. |

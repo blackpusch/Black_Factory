@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -74,12 +75,35 @@ func printUsage(w io.Writer) {
 }
 
 func parseSubFlags(fs *flag.FlagSet, args []string, boolFlags, valueFlags map[string]bool, out, errOut io.Writer) (int, bool) {
+	asJSON := hasJSONFlag(args)
+	fs.SetOutput(io.Discard)
 	reordered := reorderFlags(args, boolFlags, valueFlags)
 	if err := fs.Parse(reordered); err != nil {
-		return emitUsageError(out, errOut, hasJSONFlag(args), err.Error()), false
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(out, "Uso de %s:\n", fs.Name())
+			fs.SetOutput(out)
+			fs.PrintDefaults()
+			return builder.ExitOK, false
+		}
+		return emitUsageError(out, errOut, asJSON, err.Error()), false
 	}
 	if fs.NArg() > 0 {
-		return emitUsageError(out, errOut, hasJSONFlag(args), fmt.Sprintf("argumentos posicionales inesperados: %v", fs.Args())), false
+		return emitUsageError(out, errOut, asJSON, fmt.Sprintf("argumentos posicionales inesperados: %v", fs.Args())), false
+	}
+	timeoutVisited := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "timeout" {
+			timeoutVisited = true
+		}
+	})
+	if timeoutVisited {
+		if tf := fs.Lookup("timeout"); tf != nil {
+			if g, ok := tf.Value.(flag.Getter); ok {
+				if v, ok := g.Get().(int); ok && (v < 1 || v > builder.MaxVerifyTimeoutSec) {
+					return emitUsageError(out, errOut, asJSON, fmt.Sprintf("--timeout debe estar en 1..%d", builder.MaxVerifyTimeoutSec)), false
+				}
+			}
+		}
 	}
 	return builder.ExitOK, true
 }
@@ -473,7 +497,11 @@ func emitUsageError(out, errOut io.Writer, asJSON bool, msg string) int {
 
 func hasJSONFlag(args []string) bool {
 	for _, a := range args {
-		if a == "--json" || a == "-json" || a == "--json=true" {
+		if a == "--" {
+			return false
+		}
+		norm := strings.ToLower(strings.TrimSpace(a))
+		if norm == "--json" || norm == "-json" || norm == "--json=true" || norm == "-json=true" {
 			return true
 		}
 	}
