@@ -328,11 +328,7 @@ func ComputeWorktreeSnapshot(ctx context.Context, gc GitClient, repoRoot, worktr
 			if e.OrigPath != "" {
 				addDeleted(e.OrigPath)
 			}
-		case strings.ContainsAny(e.XY, "C"):
-			if err := addPresent(e.Path, "added"); err != nil {
-				return WorktreeSnapshot{}, err
-			}
-		case e.XY[0] == 'A' || e.XY[1] == 'A':
+		case strings.ContainsAny(e.XY, "CA"):
 			if err := addPresent(e.Path, "added"); err != nil {
 				return WorktreeSnapshot{}, err
 			}

@@ -55,23 +55,23 @@ func run(args []string, out, errOut io.Writer, hooks CLIHooks) int {
 		return cmdVerify(rest, out, errOut, hooks)
 	default:
 		printUsage(errOut)
-		fmt.Fprintf(errOut, "error: subcomando desconocido %q\n", sub)
+		_, _ = fmt.Fprintf(errOut, "error: subcomando desconocido %q\n", sub)
 		return builder.ExitUsage
 	}
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "Uso: builder <init|context|tdd-red|package|apply-order|commit|cleanup|verify> [banderas]")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Subcomandos:")
-	fmt.Fprintln(w, "  init         --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--gengis-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--project <name>] [--branch <name>] [--base-ref <ref>] [--json]")
-	fmt.Fprintln(w, "  context      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--refresh-brain] [--json]")
-	fmt.Fprintln(w, "  tdd-red      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--cmd-index 0] [--timeout 300] [--json]")
-	fmt.Fprintln(w, "  package      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--include-ui] [--include-ux] [--timeout 300] [--json]")
-	fmt.Fprintln(w, "  apply-order  --task-dir <dir> (--order <path> | --reset-bounces --reason <texto>) [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--json]")
-	fmt.Fprintln(w, "  commit       --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--gengis-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--timeout 300] [--json]")
-	fmt.Fprintln(w, "  cleanup      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--force] [--delete-branch] [--json]")
-	fmt.Fprintln(w, "  verify       [--factory-root <dir>] [--repo-root .] [--vault <dir>] [--data-dir <dir>] [--brain-bin <exe>] [--json]")
+	_, _ = fmt.Fprintln(w, "Uso: builder <init|context|tdd-red|package|apply-order|commit|cleanup|verify> [banderas]")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Subcomandos:")
+	_, _ = fmt.Fprintln(w, "  init         --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--gengis-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--project <name>] [--branch <name>] [--base-ref <ref>] [--json]")
+	_, _ = fmt.Fprintln(w, "  context      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--refresh-brain] [--json]")
+	_, _ = fmt.Fprintln(w, "  tdd-red      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--cmd-index 0] [--timeout 300] [--json]")
+	_, _ = fmt.Fprintln(w, "  package      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--include-ui] [--include-ux] [--timeout 300] [--json]")
+	_, _ = fmt.Fprintln(w, "  apply-order  --task-dir <dir> (--order <path> | --reset-bounces --reason <texto>) [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--json]")
+	_, _ = fmt.Fprintln(w, "  commit       --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--gengis-root <dir>] [--vault <dir>] [--brain-bin <exe>] [--timeout 300] [--json]")
+	_, _ = fmt.Fprintln(w, "  cleanup      --task-dir <dir> [--repo-root .] [--factory-root <dir>] [--data-dir <dir>] [--worktree-root <dir>] [--force] [--delete-branch] [--json]")
+	_, _ = fmt.Fprintln(w, "  verify       [--factory-root <dir>] [--repo-root .] [--vault <dir>] [--data-dir <dir>] [--brain-bin <exe>] [--json]")
 }
 
 func parseSubFlags(fs *flag.FlagSet, args []string, boolFlags, valueFlags map[string]bool, out, errOut io.Writer) (int, bool) {
@@ -80,7 +80,7 @@ func parseSubFlags(fs *flag.FlagSet, args []string, boolFlags, valueFlags map[st
 	reordered := reorderFlags(args, boolFlags, valueFlags)
 	if err := fs.Parse(reordered); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintf(out, "Uso de %s:\n", fs.Name())
+			_, _ = fmt.Fprintf(out, "Uso de %s:\n", fs.Name())
 			fs.SetOutput(out)
 			fs.PrintDefaults()
 			return builder.ExitOK, false
@@ -114,28 +114,28 @@ func emitCLIResult(res builder.CLIResult, code int, asJSON bool, label string, o
 		return code
 	}
 	if res.OK {
-		fmt.Fprintf(out, "%s OK: task=%s chunk=%s attempt=%d cycle=%d", label, res.TaskID, res.ChunkID, res.Attempt, res.BounceCycle)
+		_, _ = fmt.Fprintf(out, "%s OK: task=%s chunk=%s attempt=%d cycle=%d", label, res.TaskID, res.ChunkID, res.Attempt, res.BounceCycle)
 		if res.BundleID != "" {
-			fmt.Fprintf(out, " bundle=%s sha256=%s", res.BundleID, res.BundleSHA256)
+			_, _ = fmt.Fprintf(out, " bundle=%s sha256=%s", res.BundleID, res.BundleSHA256)
 		}
 		if res.Decision != "" {
-			fmt.Fprintf(out, " decision=%s", res.Decision)
+			_, _ = fmt.Fprintf(out, " decision=%s", res.Decision)
 		}
 		if res.CommitRef != "" {
-			fmt.Fprintf(out, " commit=%s", res.CommitRef)
+			_, _ = fmt.Fprintf(out, " commit=%s", res.CommitRef)
 		}
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 		if res.NextAutorCommand != "" {
-			fmt.Fprintf(out, "Siguiente paso [AUTOR]: %s\n", res.NextAutorCommand)
+			_, _ = fmt.Fprintf(out, "Siguiente paso [AUTOR]: %s\n", res.NextAutorCommand)
 		}
 		return code
 	}
-	fmt.Fprintf(errOut, "%s FAIL [%d %s] retryable=%v\n", label, res.ExitCode, res.Reason, res.Retryable)
+	_, _ = fmt.Fprintf(errOut, "%s FAIL [%d %s] retryable=%v\n", label, res.ExitCode, res.Reason, res.Retryable)
 	for _, iss := range res.Issues {
-		fmt.Fprintf(errOut, "  - %s [%s]: %s\n", iss.Pointer, iss.Code, iss.Message)
+		_, _ = fmt.Fprintf(errOut, "  - %s [%s]: %s\n", iss.Pointer, iss.Code, iss.Message)
 	}
 	if res.NextAutorCommand != "" {
-		fmt.Fprintf(out, "Siguiente paso [AUTOR]: %s\n", res.NextAutorCommand)
+		_, _ = fmt.Fprintf(out, "Siguiente paso [AUTOR]: %s\n", res.NextAutorCommand)
 	}
 	return code
 }
@@ -224,10 +224,10 @@ func cmdContext(args []string, out, errOut io.Writer, hooks CLIHooks) int {
 	if asJSON {
 		writeJSON(out, res)
 	} else if res.OK {
-		fmt.Fprintf(out, "Context OK: task=%s chunk=%s attempt=%d cycle=%d worktree=%s branch=%s risk=%s\n",
+		_, _ = fmt.Fprintf(out, "Context OK: task=%s chunk=%s attempt=%d cycle=%d worktree=%s branch=%s risk=%s\n",
 			res.TaskID, res.ChunkID, res.Attempt, res.BounceCycle, res.WorktreePath, res.BuildBranch, res.BrainContext.HighestRiskLevel)
 	} else {
-		fmt.Fprintf(errOut, "Context FAIL [%d %s] retryable=%v\n", res.ExitCode, res.Reason, res.Retryable)
+		_, _ = fmt.Fprintf(errOut, "Context FAIL [%d %s] retryable=%v\n", res.ExitCode, res.Reason, res.Retryable)
 	}
 	return code
 }
@@ -463,13 +463,13 @@ func cmdVerify(args []string, out, errOut io.Writer, hooks CLIHooks) int {
 	if asJSON {
 		writeJSON(out, rep)
 	} else if rep.OK {
-		fmt.Fprintf(out, "Verify OK=true (gitignore=%v, gengis_hashes=%v, brain=%v, artifacts=%d, g4_issues=%d)\n",
+		_, _ = fmt.Fprintf(out, "Verify OK=true (gitignore=%v, gengis_hashes=%v, brain=%v, artifacts=%d, g4_issues=%d)\n",
 			rep.GitIgnoreOK, rep.GengisHashesOK, rep.BrainOK, rep.ArtifactsChecked, rep.G4Issues)
 	} else {
-		fmt.Fprintf(errOut, "Verify FAIL [%d %s] retryable=%v (gitignore=%v, gengis_hashes=%v, brain=%v, g4_issues=%d)\n",
+		_, _ = fmt.Fprintf(errOut, "Verify FAIL [%d %s] retryable=%v (gitignore=%v, gengis_hashes=%v, brain=%v, g4_issues=%d)\n",
 			rep.ExitCode, rep.Reason, rep.Retryable, rep.GitIgnoreOK, rep.GengisHashesOK, rep.BrainOK, rep.G4Issues)
 		for _, iss := range rep.Issues {
-			fmt.Fprintf(errOut, "  - %s [%s]: %s\n", iss.Pointer, iss.Code, iss.Message)
+			_, _ = fmt.Fprintf(errOut, "  - %s [%s]: %s\n", iss.Pointer, iss.Code, iss.Message)
 		}
 	}
 	return code
@@ -490,7 +490,7 @@ func emitUsageError(out, errOut io.Writer, asJSON bool, msg string) int {
 	if asJSON {
 		writeJSON(out, res)
 	} else {
-		fmt.Fprintf(errOut, "error [2 INVALID_USAGE]: %s\n", bfcore.RedactAllG4(msg))
+		_, _ = fmt.Fprintf(errOut, "error [2 INVALID_USAGE]: %s\n", bfcore.RedactAllG4(msg))
 	}
 	return builder.ExitUsage
 }

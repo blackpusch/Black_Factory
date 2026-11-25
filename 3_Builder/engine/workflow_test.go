@@ -914,9 +914,8 @@ func TestGoldfishChunk03Regressions(t *testing.T) {
 	}
 
 	// Relative GengisRoot via cwd resolved to absolute path in NextAutorCommand
-	origWD, _ := os.Getwd()
-	if err := os.Chdir(factory); err == nil {
-		t.Cleanup(func() { _ = os.Chdir(origWD) })
+	t.Run("relative_gengis_root", func(t *testing.T) {
+		t.Chdir(factory)
 		t.Setenv("FAKE_GENGIS_MODE", "pass")
 		t.Setenv("FAKE_GENGIS_WT", wtDir)
 		t.Setenv("FAKE_GENGIS_REPO", repo)
@@ -927,8 +926,7 @@ func TestGoldfishChunk03Regressions(t *testing.T) {
 		if codeRel != ExitOK || !resRel.OK || !strings.Contains(resRel.NextAutorCommand, filepath.Clean(gengisDir)) {
 			t.Fatalf("expected relative GengisRoot resolved to absolute %s, got %d %+v", gengisDir, codeRel, resRel)
 		}
-		_ = os.Chdir(origWD)
-	}
+	})
 
 	// Simulate GO_NEXT skipping builder context -> tdd-red -> package must fail with STALE_BRAIN_CONTEXT (4)
 	wtHead := runGitTestCmd(t, wtDir, "rev-parse", "HEAD")

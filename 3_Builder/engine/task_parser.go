@@ -610,7 +610,7 @@ func extractTargetRepo(lines []string) string {
 		}
 		nk := normalizeKey(key)
 		readOnlyTag := strings.Contains(nk, "solo lectura")
-		prio := 10
+		var prio int
 		switch {
 		case strings.Contains(nk, "repositorio destino") || strings.Contains(nk, "repositorio de implementacion"):
 			prio = 1

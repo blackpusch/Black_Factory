@@ -11,8 +11,10 @@ Registro cronológico y verificable (`G5`) de deuda técnica diferida, hallazgos
 | `TD-001` | `2026-11-24` | `2_Spec_Writer` | `Major` + `3 Nits` | Abierta (diferida) | `bf_02_spec_writer_v1` (Intento 3, `GO_NEXT`) | Restricción estricta de `WorkItem.TraceID` (`reTraceID`) + paridad `verifyRenderedGengisParity` (`\r`, `~~~`, `#`, `reIndexMaxRetries`) + `TargetBranch` + `review_gate.verify_step_id` |
 | `TD-002` | `2026-11-24` | `0_Brain` | `Major` | Abierta (preexistente) | `bf_02_spec_writer_v1` (Chunk 01 Intento 1) | `renderFrontmatter` omite `expires_at`, causando flake de borde de segundo en `TestSignProposalAndVerifyRoundTrip` |
 | `TD-003` | `2026-11-23` | `0_Brain` | `Major` | Abierta (preexistente) | `Docs/designs/2_spec_writer.md` (`NG5`) | `ProposeUpdate` no adquiere `.brain.lock` ni ejecuta `ScanG4` antes de persistir propuestas en `_proposals/` |
-| `TD-004` | `2026-11-19` | `GengiSWAP` | `Media` | Abierta (Paso 6) | `Docs/PROYECTO_TUNGSTENO.md` (§5.5–5.7) | Evolución pendiente del motor `gengis`: `QA_OVERRIDE`, cursor de log sincronizado, `TaskSource`, `saveBaseRef` y divergencias `D1–D5` |
-| `TD-005` | `2026-11-24` | `0_Brain/vault` | `Baja` | Pendiente post-merge | Cierre `bf_02_spec_writer_v1` | Registrar `2_Spec_Writer` y `pkg/bfcore` en la bóveda local `0_Brain/vault` tras integrar `feat/2-spec-writer` en `main` |
+| `TD-004` | `2026-11-19` | `GengiSWAP` | `Media` | Abierta (Paso 6) | `Docs/PROYECTO_TUNGSTENO.md` (§5.5–5.7) + auditoría `2026-11-25` | Evolución pendiente del motor `gengis`: `QA_OVERRIDE`, cursor de log sincronizado, `TaskSource`, `saveBaseRef`, divergencias `D1–D5` y limpieza estática (`runner.go:54`, `bridge.go:267`) |
+| `TD-005` | `2026-11-24` | `0_Brain/vault` | `Baja` | Pendiente post-merge | Cierre `bf_02_spec_writer_v1` / `bf_03_builder_v1` | Registrar `2_Spec_Writer`, `3_Builder` y `pkg/bfcore` en la bóveda local `0_Brain/vault` tras integrar en `main` |
+| `TD-006` | `2026-11-25` | `pkg/bfcore` / `0_Brain` / `2_Spec_Writer` / `3_Builder` | `Media` | Abierta (pre-`4_Revisores/engine`) | Auditoría SonarQube + `golangci-lint` (`934e885`) | Extraer `ScanRawAndDecodedG4`/`WriteJSONAtomicG4` de `2_Spec_Writer`/`3_Builder` a `pkg/bfcore` y retirar copia `lock_*.go` en `0_Brain/engine` |
+| `TD-007` | `2026-11-25` | `0_Brain` / `1_Intake` / `2_Spec_Writer` | `Baja`–`Media` | Abierta (módulos cerrados `NG5`) | Auditoría SonarQube + `golangci-lint` (`934e885`) | Hacer `verify` 100% libre de cerrojos/escrituras en `0_Brain` y `1_Intake`, más limpieza `errcheck`/`ineffassign`/`SA9003` y reducción `S3776` |
 
 ---
 
@@ -49,9 +51,27 @@ Registro cronológico y verificable (`G5`) de deuda técnica diferida, hallazgos
 - **Origen:** [`Docs/PROYECTO_TUNGSTENO.md`](PROYECTO_TUNGSTENO.md) (§5.5–5.7).
 - **Alcance:** `GengiSWAP/engine/{ring.go,bridge.go,runner.go}` (`RZ-001`, nivel `CRITICO`; cualquier cambio requiere autorización explícita `[AUTOR]` y actualización coordinada de `PinnedBridgeGoSHA256`/`PinnedRingGoSHA256` en `2_Spec_Writer/engine/verify.go`).
 - **Ítems clave a evaluar al diseñar `3_Builder`:** distinción `QA_OVERRIDE`, cursor de eventos sincronizados en `.ring/state.json`, errores ignorados en `saveBaseRef`, `NopWorkspace` silencioso cuando falla `parseIndexFromDir` en `resolveTargetRepo`, y aislamiento real con `git worktree` + interfaz `TaskSource`.
+- **Deuda estática menor detectada (`2026-11-25`, SonarQube / `golangci-lint`):** variable `max` en `GengiSWAP/engine/runner.go:54` sombrea el builtin `max` (`go:S978`) y asignación inefectiva `prio := 10` en `GengiSWAP/engine/bridge.go:267` (`ineffassign`) — no tocadas en `feat/3-builder` por `RZ-001` y hashes SHA-256 anclados en `verify.go`.
 
-### `TD-005` — Sincronización de `0_Brain/vault` post-merge de `1_Intake` y `2_Spec_Writer`
+### `TD-005` — Sincronización de `0_Brain/vault` post-merge de `1_Intake`, `2_Spec_Writer` y `3_Builder`
 
 - **Fecha de registro:** `2026-11-24`
-- **Origen:** Cierre de `bf_01_intake_v1` y `bf_02_spec_writer_v1` (ramas `feat/1-intake` y `feat/2-spec-writer` pendientes de integración en `main`).
-- **Acción requerida post-merge:** Actualizar `wiki/` y `index.md` en `0_Brain/vault/` (bóveda privada `Opción i`) documentando `pkg/bfcore`, `1_Intake` y `2_Spec_Writer`, y reejecutar `brain.exe index` + `brain.exe verify`.
+- **Origen:** Cierre de `bf_01_intake_v1`, `bf_02_spec_writer_v1` y `bf_03_builder_v1` (ramas `feat/1-intake`, `feat/2-spec-writer` y `feat/3-builder` pendientes de integración en `main`).
+- **Acción requerida post-merge:** Actualizar `wiki/` y `index.md` en `0_Brain/vault/` (bóveda privada `Opción i`) documentando `pkg/bfcore`, `1_Intake`, `2_Spec_Writer` y `3_Builder`, y reejecutar `brain.exe index` + `brain.exe verify`.
+
+### `TD-006` — Consolidación compartida en `pkg/bfcore` antes de `4_Revisores/engine`
+
+- **Fecha de registro:** `2026-11-25`
+- **Origen:** Auditoría SonarQube + `golangci-lint` sobre `feat/3-builder` (`934e885`), confirmando [`Docs/designs/3_builder.md`](designs/3_builder.md#L653).
+- **Referencias `G5`:**
+  1. Duplicación JSON atómico y `G4` entre `2_Spec_Writer/engine/state.go:25-140` (`bfcore.ScanG4All(string(raw))` en `L65`) y `3_Builder/engine/state.go:29-230` (`ScanRawAndDecodedG4(raw)` en `L204`).
+  2. Duplicación de wrapper de cerrojos en `0_Brain/engine/lock_windows.go:25-45` y `0_Brain/engine/lock_other.go:25-45` frente a `pkg/bfcore/lock_windows.go` y `pkg/bfcore/lock_other.go`.
+- **Remediación propuesta:** Extraer `WriteJSONAtomicG4` / `ScanRawAndDecodedG4` y helpers de lock hacia `pkg/bfcore` antes de implementar `4_Revisores/engine`, y retirar las copias locales en una ventana coordinada posterior al cierre de `feat/3-builder`.
+
+### `TD-007` — `verify` 100% libre de cerrojos en `0_Brain`/`1_Intake` e higiene estática en módulos cerrados
+
+- **Fecha de registro:** `2026-11-25`
+- **Origen:** Auditoría transversal (`2026-11-25`) sobre módulos cerrados (`0` bytes tocados en `feat/3-builder` por `NG5`).
+- **Referencias `G5`:**
+  1. `0_Brain/engine/cmd/brain/main.go:313-323` (`AcquireVaultLock` sobre `.brain.lock` + `RecoverJournal` durante `verify`) y `1_Intake/engine/store.go:566, 683-691` (`s.withLock` sobre `.intake.lock` + evento `"VERIFIED"` en `VerifyRuntime`, consumido en `1_Intake/engine/cmd/intake/main.go:697-705`), que fallan con `Acceso denegado` en tokens/entornos de solo lectura (a diferencia de `2_Spec_Writer` y `3_Builder`).
+  2. Higiene estática menor en módulos cerrados: `0_Brain/engine/query.go:79` (`ineffassign`), `2_Spec_Writer/engine/validate.go:2275` (`SA9003` rama vacía), `errcheck` en `0_Brain/engine`, `1_Intake/engine` y `2_Spec_Writer/engine`, y refactorización gradual de funciones de alta complejidad cognitiva (`go:S3776` / `go:S107`, p. ej. `2_Spec_Writer/engine/validate.go:676`).

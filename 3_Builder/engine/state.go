@@ -344,7 +344,7 @@ func AppendEvent(dataDir string, ev BuilderEvent) error {
 	}
 	defer func() { _ = lock.Unlock() }()
 
-	f, err := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
