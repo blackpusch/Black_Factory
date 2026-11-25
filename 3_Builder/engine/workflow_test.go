@@ -827,3 +827,148 @@ func TestLatencyBudgetP95(t *testing.T) {
 		t.Fatalf("latency budget exceeded: p95=%v >= 500ms", p95)
 	}
 }
+
+type modeDriftGitClient struct {
+	ExecGitClient
+	overrideMode string
+}
+
+func (m modeDriftGitClient) DiffRawZ(ctx context.Context, dir, baseRef string) ([]byte, error) {
+	raw, err := m.ExecGitClient.DiffRawZ(ctx, dir, baseRef)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.ReplaceAll(string(raw), "100644 100644", "100644 "+m.overrideMode)), nil
+}
+
+func (m modeDriftGitClient) StageModes(ctx context.Context, dir string) (map[string]string, error) {
+	modes, err := m.ExecGitClient.StageModes(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	for k := range modes {
+		if strings.HasSuffix(k, "pkg/sample.go") {
+			modes[k] = m.overrideMode
+		}
+	}
+	return modes, nil
+}
+
+func TestGoldfishChunk03Regressions(t *testing.T) {
+	repo, factory, taskDir, wtRoot, dataDir, vault, headSHA, fb := setupWorkflowFixture(t)
+	wtDir := filepath.Join(wtRoot, "bf_life_01")
+	stPath := filepath.Join(taskDir, ".ring", "state.json")
+	st, _ := LoadRingState(taskDir)
+	st.Chunks[0].Scope.CanModify = []string{"pkg/"}
+	st.Chunks = append(st.Chunks, RingChunk{
+		ID:             "02_next",
+		Spec:           "Next chunk",
+		Acceptance:     []string{"OK"},
+		VerifyCommands: []string{"go test ./..."},
+		FailureProof:   "fails on bug",
+		Scope:          Scope{CanModify: []string{"pkg/"}},
+		Status:         "PENDING",
+	})
+	sb, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(stPath, sb, 0o644)
+
+	// 1. Relative --gengis-root resolves to absolute path cleanly (no double prefix + abs NextAutorCommand)
+	fakeGengis := writeFakeGengisBinary(t)
+	_ = os.WriteFile(filepath.Join(wtDir, "pkg", "sample_test.go"), []byte("package pkg\nimport \"testing\"\nfunc TestS(t *testing.T){}\n"), 0o644)
+	_, _ = TDDRed(TDDRedOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, Runner: stubRunnerFunc(func(context.Context, string, string) (Evidence, error) { return Evidence{ExitCode: 1}, nil })})
+	_ = os.WriteFile(filepath.Join(wtDir, "pkg", "sample.go"), []byte("package pkg\nvar V = 11\n"), 0o644)
+	pkg, codePkg := Package(PackageOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb, Runner: stubRunnerFunc(func(context.Context, string, string) (Evidence, error) { return Evidence{ExitCode: 0}, nil })})
+	if codePkg != ExitOK {
+		t.Fatalf("Package failed: %d %+v", codePkg, pkg)
+	}
+	var b DeliveryBundle
+	rawB, _ := os.ReadFile(filepath.Join(dataDir, filepath.FromSlash(pkg.BundlePath)))
+	_ = json.Unmarshal(rawB, &b)
+
+	// Reject null remediation_items & missing requires_red_test & padded >200 summary in BounceOrder
+	orderDir := t.TempDir()
+	nullItemsPath := filepath.Join(orderDir, "null_items.json")
+	_ = os.WriteFile(nullItemsPath, []byte(fmt.Sprintf(`{"schema_version":"1.0","order_id":"ORD-NULL1","created_at":"2026-11-24T12:00:00Z","trace_id":%q,"task_id":%q,"chunk_id":%q,"bundle_id":%q,"bundle_sha256":%q,"decision":"APPROVE","reviewer_verdicts":{"security":{"status":"PASS","findings_count":0,"summary":"ok"},"code_architecture":{"status":"PASS","findings_count":0,"summary":"ok"},"ux":{"status":"NA","findings_count":0,"summary":"na","na_reason":"int"},"ui":{"status":"NA","findings_count":0,"summary":"na","na_reason":"int"}},"requires_red_test":false,"remediation_items":null,"summary":"ok"}`, b.TraceID, b.TaskID, b.ChunkID, b.BundleID, pkg.BundleSHA256)), 0o644)
+	if resNull, codeNull := ApplyOrder(ApplyOrderOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, OrderPath: nullItemsPath}); codeNull != ExitFixable || resNull.Reason != ReasonOrderValidationFailed {
+		t.Fatalf("expected ORDER_VALIDATION_FAILED on null remediation_items, got %d %+v", codeNull, resNull)
+	}
+	paddedSum := makeTestOrder(b, pkg.BundleSHA256, "ORD-PAD1", "APPROVE", false)
+	paddedSum.Summary = strings.Repeat(" ", 195) + "padded!"
+	if resPad, codePad := ApplyOrder(ApplyOrderOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, OrderPath: writeOrderTemp(t, orderDir, "pad.json", paddedSum)}); codePad != ExitFixable || resPad.Reason != ReasonOrderValidationFailed {
+		t.Fatalf("expected ORDER_VALIDATION_FAILED on un-trimmed summary > 200 runes, got %d %+v", codePad, resPad)
+	}
+
+	// Valid APPROVE, then octal mode drift (0644 -> 0755) -> WORKTREE_DRIFT_AFTER_APPROVAL
+	appPath := writeOrderTemp(t, orderDir, "app.json", makeTestOrder(b, pkg.BundleSHA256, "ORD-REG-APP", "APPROVE", false))
+	if resA, codeA := ApplyOrder(ApplyOrderOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, OrderPath: appPath}); codeA != ExitOK || !resA.OK {
+		t.Fatalf("APPROVE failed: %d %+v", codeA, resA)
+	}
+	gengisDir := filepath.Join(factory, "GengiSWAP")
+	_ = os.MkdirAll(gengisDir, 0o755)
+	if resDrift, codeDrift := Commit(CommitOptions{
+		TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot,
+		GengisRoot: gengisDir, GengisBin: fakeGengis, VaultRoot: vault, BrainClient: fb,
+		Git: modeDriftGitClient{overrideMode: "100755"},
+	}); codeDrift != ExitFixable || resDrift.Reason != ReasonWorktreeDriftAfterAppr {
+		t.Fatalf("expected WORKTREE_DRIFT_AFTER_APPROVAL on mode 0755 change, got %d %+v", codeDrift, resDrift)
+	}
+
+	// Relative GengisRoot via cwd resolved to absolute path in NextAutorCommand
+	origWD, _ := os.Getwd()
+	if err := os.Chdir(factory); err == nil {
+		t.Cleanup(func() { _ = os.Chdir(origWD) })
+		t.Setenv("FAKE_GENGIS_MODE", "pass")
+		t.Setenv("FAKE_GENGIS_WT", wtDir)
+		t.Setenv("FAKE_GENGIS_REPO", repo)
+		resRel, codeRel := Commit(CommitOptions{
+			TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot,
+			GengisRoot: "GengiSWAP", GengisBin: fakeGengis, VaultRoot: vault, BrainClient: fb,
+		})
+		if codeRel != ExitOK || !resRel.OK || !strings.Contains(resRel.NextAutorCommand, filepath.Clean(gengisDir)) {
+			t.Fatalf("expected relative GengisRoot resolved to absolute %s, got %d %+v", gengisDir, codeRel, resRel)
+		}
+		_ = os.Chdir(origWD)
+	}
+
+	// Simulate GO_NEXT skipping builder context -> tdd-red -> package must fail with STALE_BRAIN_CONTEXT (4)
+	wtHead := runGitTestCmd(t, wtDir, "rev-parse", "HEAD")
+	_ = os.WriteFile(filepath.Join(taskDir, ".ring", "base_ref"), []byte(wtHead+"\n"), 0o644)
+	st.Chunks[0].Status = "DONE"
+	st.Chunks[0].Attempts = []RingAttempt{{N: 1, QADone: true, QAPassed: true, Verdict: &RingVerdict{Decision: "GO_NEXT"}}}
+	st.Index = 1
+	sb2, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(stPath, sb2, 0o644)
+
+	_ = os.WriteFile(filepath.Join(wtDir, "pkg", "sample_test.go"), []byte("package pkg\nimport \"testing\"\nfunc TestS2(t *testing.T){}\n"), 0o644)
+	if resRed2, codeRed2 := TDDRed(TDDRedOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, Runner: stubRunnerFunc(func(context.Context, string, string) (Evidence, error) { return Evidence{ExitCode: 1}, nil })}); codeRed2 != ExitOK {
+		t.Fatalf("TDDRed chunk 2 failed: %d %+v", codeRed2, resRed2)
+	}
+	_ = os.WriteFile(filepath.Join(wtDir, "pkg", "sample.go"), []byte("package pkg\nvar V = 12\n"), 0o644)
+	if resStaleChunk, codeStaleChunk := Package(PackageOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb}); codeStaleChunk != ExitExternalDecision || resStaleChunk.Reason != ReasonStaleBrainContext {
+		t.Fatalf("expected STALE_BRAIN_CONTEXT when context skipped across GO_NEXT, got %d %+v", codeStaleChunk, resStaleChunk)
+	}
+
+	// Transversal BounceBrakeActive on Package, ApplyOrder, and Commit
+	sessPath := filepath.Join(dataDir, "bf_life_01", "session.json")
+	sess, _ := LoadSessionStrict(filepath.Join(dataDir, "bf_life_01"))
+	sess.BounceBrakeActive = true
+	_ = WriteJSONAtomicG4(sessPath, sess)
+	if res, code := Package(PackageOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb}); code != ExitAttemptsBlocked || res.Reason != ReasonMaxBounceCycles {
+		t.Fatalf("expected BounceBrakeActive in Package, got %d %+v", code, res)
+	}
+	if res, code := ApplyOrder(ApplyOrderOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, OrderPath: appPath}); code != ExitAttemptsBlocked || res.Reason != ReasonMaxBounceCycles {
+		t.Fatalf("expected BounceBrakeActive in ApplyOrder, got %d %+v", code, res)
+	}
+	if res, code := Commit(CommitOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, GengisRoot: gengisDir, GengisBin: fakeGengis, VaultRoot: vault, BrainClient: fb}); code != ExitAttemptsBlocked || res.Reason != ReasonMaxBounceCycles {
+		t.Fatalf("expected BounceBrakeActive in Commit, got %d %+v", code, res)
+	}
+
+	// WORKTREE_PATH_MISMATCH via external edit of index.md
+	idxPath := filepath.Join(taskDir, "index.md")
+	idxRaw, _ := os.ReadFile(idxPath)
+	_ = os.WriteFile(idxPath, []byte(strings.ReplaceAll(string(idxRaw), wtDir, repo)), 0o644)
+	if res, code := Package(PackageOptions{TaskDir: taskDir, RepoRoot: repo, FactoryRoot: factory, DataDir: dataDir, WorktreeRoot: wtRoot, VaultRoot: vault, BrainClient: fb}); code != ExitInfraOrRefusal || res.Reason != ReasonWorktreePathMismatch {
+		t.Fatalf("expected WORKTREE_PATH_MISMATCH after external index.md edit, got %d %+v", code, res)
+	}
+	_ = headSHA
+}

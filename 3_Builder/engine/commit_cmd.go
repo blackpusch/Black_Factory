@@ -36,12 +36,27 @@ func Commit(opts CommitOptions) (CLIResult, int) {
 	if strings.TrimSpace(opts.GengisRoot) != "" {
 		sctx.Roots.GengisRoot = filepath.Clean(opts.GengisRoot)
 	}
+	absGengisRoot, absGRootErr := filepath.Abs(sctx.Roots.GengisRoot)
+	if absGRootErr != nil {
+		return failResult(ExitInfraOrRefusal, ReasonIOError, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+	}
+	sctx.Roots.GengisRoot = filepath.Clean(absGengisRoot)
 
 	if sctx.Session.BounceBrakeActive {
 		return failResult(ExitAttemptsBlocked, ReasonMaxBounceCycles, sctx.Session.TraceID, sctx.Session.TaskID, nil)
 	}
 
+	if err := CheckReparseSafety(sctx.Roots.GengisRoot); err != nil {
+		if errors.Is(err, bfcore.ErrReparsePoint) {
+			return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+		}
+		return failResult(ExitInfraOrRefusal, ReasonGengisUnavailable, sctx.Session.TraceID, sctx.Session.TaskID, nil)
+	}
+
 	gengisBin := ResolveGengisBin(sctx.Roots.GengisRoot, opts.GengisBin)
+	if absBin, err := filepath.Abs(gengisBin); err == nil {
+		gengisBin = filepath.Clean(absBin)
+	}
 	if err := bfcore.CheckNoReparseChain("", gengisBin); err != nil {
 		if errors.Is(err, bfcore.ErrReparsePoint) {
 			return failResult(ExitInfraOrRefusal, ReasonReparsePointDetected, sctx.Session.TraceID, sctx.Session.TaskID, nil)

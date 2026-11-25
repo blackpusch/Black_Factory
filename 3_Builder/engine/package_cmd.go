@@ -110,6 +110,16 @@ func EvaluateReviewerApplicability(changed []ChangedFileEntry, includeUI, includ
 }
 
 func verifyBrainFreshness(client bfcore.BrainClient, sctx SessionRuntimeContext, activeChunk RingChunk) (string, *CLIResult, int) {
+	saved := sctx.Session.BrainContext
+	if saved.ChunkID != activeChunk.ID {
+		r, c := failResult(ExitExternalDecision, ReasonStaleBrainContext, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+			Pointer: "/brain_context/chunk_id",
+			Code:    ReasonStaleBrainContext,
+			Message: "el contexto de 0_Brain corresponde a otro chunk; ejecuta builder context antes de package",
+		}})
+		return "", &r, c
+	}
+
 	qFiles := effectiveQueriedFiles(sctx.Meta.Scope, activeChunk)
 	liveSnap, err := QueryBrainSnapshot(client, sctx.Roots.VaultRoot, "", sctx.Session.Project, activeChunk.ID, qFiles)
 	if err != nil {
@@ -125,7 +135,6 @@ func verifyBrainFreshness(client bfcore.BrainClient, sctx SessionRuntimeContext,
 		return "", &r, c
 	}
 
-	saved := sctx.Session.BrainContext
 	if liveSnap.RiskZonesSHA256 != saved.RiskZonesSHA256 || len(liveSnap.MatchedDocHashes) != len(saved.MatchedDocHashes) {
 		r, c := failResult(ExitExternalDecision, ReasonStaleBrainContext, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
 			Pointer: "/brain_context",
@@ -271,6 +280,14 @@ func Package(opts PackageOptions) (CLIResult, int) {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
+
+	if len(activeChunk.VerifyCommands) == 0 {
+		return failResult(ExitInfraOrRefusal, ReasonArtifactStateCorrupt, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+			Pointer: "/chunks/verify_commands",
+			Code:    ReasonArtifactStateCorrupt,
+			Message: "el chunk activo no declara VerifyCommands",
+		}})
+	}
 
 	greenEvidence := make([]CommandEvidence, 0, len(activeChunk.VerifyCommands))
 	for i, rawCmd := range activeChunk.VerifyCommands {

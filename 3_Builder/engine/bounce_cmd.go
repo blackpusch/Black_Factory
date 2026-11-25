@@ -20,7 +20,7 @@ var reOrderID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$`)
 
 func validateSafeSummary(s string, maxRunes int, disallowShellChars bool) bool {
 	trimmed := strings.TrimSpace(s)
-	if trimmed == "" || len([]rune(trimmed)) > maxRunes {
+	if trimmed == "" || len([]rune(s)) > maxRunes {
 		return false
 	}
 	if strings.ContainsAny(s, "\r\n") {
@@ -30,6 +30,57 @@ func validateSafeSummary(s string, maxRunes int, disallowShellChars bool) bool {
 		return false
 	}
 	return true
+}
+
+func validateOrderRequiredNonNull(cleaned []byte) (string, string) {
+	var rawObj map[string]any
+	if err := json.Unmarshal(cleaned, &rawObj); err != nil || rawObj == nil {
+		return "/order", "BounceOrder debe ser un objeto JSON no nulo"
+	}
+	topReq := []string{
+		"schema_version", "order_id", "created_at", "trace_id", "task_id",
+		"chunk_id", "bundle_id", "bundle_sha256", "decision", "reviewer_verdicts",
+		"requires_red_test", "remediation_items", "summary",
+	}
+	for _, k := range topReq {
+		v, ok := rawObj[k]
+		if !ok || v == nil {
+			return "/" + k, fmt.Sprintf("campo obligatorio %q ausente o null", k)
+		}
+	}
+	verdicts, ok := rawObj["reviewer_verdicts"].(map[string]any)
+	if !ok || verdicts == nil {
+		return "/reviewer_verdicts", "reviewer_verdicts debe ser un objeto JSON"
+	}
+	for _, ax := range []string{"security", "code_architecture", "ux", "ui"} {
+		axObj, ok := verdicts[ax].(map[string]any)
+		if !ok || axObj == nil {
+			return "/reviewer_verdicts/" + ax, fmt.Sprintf("eje %q ausente o null", ax)
+		}
+		for _, k := range []string{"status", "findings_count", "summary"} {
+			v, exists := axObj[k]
+			if !exists || v == nil {
+				return "/reviewer_verdicts/" + ax + "/" + k, fmt.Sprintf("campo obligatorio %q ausente o null", k)
+			}
+		}
+	}
+	items, ok := rawObj["remediation_items"].([]any)
+	if !ok || items == nil {
+		return "/remediation_items", "remediation_items debe ser un arreglo JSON (no null)"
+	}
+	for i, elem := range items {
+		itemObj, ok := elem.(map[string]any)
+		if !ok || itemObj == nil {
+			return fmt.Sprintf("/remediation_items/%d", i), "elemento debe ser objeto JSON"
+		}
+		for _, k := range []string{"id", "axis", "severity", "file", "line", "description", "required_action"} {
+			v, exists := itemObj[k]
+			if !exists || v == nil {
+				return fmt.Sprintf("/remediation_items/%d/%s", i, k), fmt.Sprintf("campo obligatorio %q ausente o null", k)
+			}
+		}
+	}
+	return "", ""
 }
 
 func validateBounceOrderAgainstBundle(ord BounceOrder, bundle DeliveryBundle, session SessionState) (string, string, string) {
@@ -353,6 +404,16 @@ func ApplyOrder(opts ApplyOrderOptions) (CLIResult, int) {
 			Code:    ReasonOrderValidationFailed,
 			Message: "contenido JSON trailing detectado tras BounceOrder",
 		}})
+	}
+	if reqPtr, reqMsg := validateOrderRequiredNonNull(cleaned); reqPtr != "" {
+		return failResult(ExitFixable, ReasonOrderValidationFailed, sctx.Session.TraceID, sctx.Session.TaskID, []ValidationIssue{{
+			Pointer: reqPtr,
+			Code:    ReasonOrderValidationFailed,
+			Message: reqMsg,
+		}})
+	}
+	if ord.RemediationItems == nil {
+		ord.RemediationItems = []RemediationItem{}
 	}
 
 	if sctx.Session.LatestBundleSHA256 == "" || sctx.Session.ActiveBounceOrderID != "" || sctx.Session.ApprovedBundleSHA256 != "" {
