@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blackfactory.local/schemas/review_verdict.schema.json",
+  "title": "Black Factory ReviewVerdict v1.0",
+  "description": "Independent single-axis verdict emitted by a 4_Revisores clean-context subagent (or deterministic NA when inapplicable) and validated before 5_Cycle_Approver consolidation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verdict_id",
+    "created_at",
+    "trace_id",
+    "task_id",
+    "chunk_id",
+    "bundle_id",
+    "bundle_sha256",
+    "axis",
+    "status",
+    "model_id",
+    "model_family",
+    "requires_red_test",
+    "summary",
+    "findings_count",
+    "findings",
+    "checks_performed"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "verdict_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^BND-[a-z0-9][a-z0-9_-]{2,63}-.+?-a[1-9][0-9]*-r[0-9]+-c[0-3]$"
+    },
+    "bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "axis": {
+      "type": "string",
+      "enum": [
+        "security",
+        "code_architecture",
+        "ux",
+        "ui"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "NA"
+      ]
+    },
+    "na_reason": {
+      "type": "string",
+      "maxLength": 300,
+      "pattern": ".*\\S.*"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": ".*\\S.*"
+    },
+    "model_family": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": ".*\\S.*"
+    },
+    "requires_red_test": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?=.*\\S)[^\\r\\n]+$"
+    },
+    "findings_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/review_finding"
+      }
+    },
+    "checks_performed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/check_record"
+      }
+    },
+    "ui_evidence_used": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 17,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": ".*\\S.*"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PASS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "requires_red_test": {
+            "const": false
+          },
+          "findings_count": {
+            "const": 0
+          },
+          "findings": {
+            "maxItems": 0
+          },
+          "checks_performed": {
+            "items": {
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "NA"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "FAIL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "findings_count": {
+            "minimum": 1
+          },
+          "findings": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NA"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "na_reason"
+        ],
+        "properties": {
+          "axis": {
+            "enum": [
+              "ux",
+              "ui"
+            ]
+          },
+          "na_reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "pattern": ".*\\S.*"
+          },
+          "model_family": {
+            "const": "deterministic"
+          },
+          "requires_red_test": {
+            "const": false
+          },
+          "findings_count": {
+            "const": 0
+          },
+          "findings": {
+            "maxItems": 0
+          },
+          "ui_evidence_used": {
+            "maxItems": 0
+          },
+          "checks_performed": {
+            "items": {
+              "properties": {
+                "result": {
+                  "const": "NA"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "review_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "severity",
+        "file",
+        "line",
+        "evidence_quote",
+        "description",
+        "required_action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "BLOCKER",
+            "MAJOR",
+            "MINOR"
+          ]
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "symbol_anchor": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "evidence_quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        },
+        "required_action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        }
+      }
+    },
+    "check_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "result",
+        "evidence"
+      ],
+      "properties": {
+        "check_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NA"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        }
+      }
+    }
+  }
+}

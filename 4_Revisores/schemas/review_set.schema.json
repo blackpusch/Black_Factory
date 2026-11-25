@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blackfactory.local/schemas/review_set.schema.json",
+  "title": "Black Factory ReviewSet v1.0",
+  "description": "Sealed 4-axis review set produced by 4_Revisores (reviewer.exe seal) for 5_Cycle_Approver consolidation into BounceOrder v1.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "set_id",
+    "created_at",
+    "trace_id",
+    "task_id",
+    "chunk_id",
+    "bundle_id",
+    "bundle_sha256",
+    "worktree_tree_sha256",
+    "builder_model_family",
+    "any_fail",
+    "requires_red_test_any",
+    "verdicts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "set_id": {
+      "type": "string",
+      "pattern": "^SET-[0-9a-f]{16}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^BND-[a-z0-9][a-z0-9_-]{2,63}-.+?-a[1-9][0-9]*-r[0-9]+-c[0-3]$"
+    },
+    "bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "worktree_tree_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "builder_model_family": {
+      "type": "string",
+      "minLength": 1
+    },
+    "any_fail": {
+      "type": "boolean"
+    },
+    "requires_red_test_any": {
+      "type": "boolean"
+    },
+    "verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "code_architecture",
+        "ux",
+        "ui"
+      ],
+      "properties": {
+        "security": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/sealed_verdict_ref"
+            },
+            {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "code_architecture": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/sealed_verdict_ref"
+            },
+            {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "ux": {
+          "$ref": "#/$defs/sealed_verdict_ref"
+        },
+        "ui": {
+          "$ref": "#/$defs/sealed_verdict_ref"
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "any_fail": {
+        "const": false
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "requires_red_test_any": {
+        "const": false
+      },
+      "verdicts": {
+        "type": "object",
+        "properties": {
+          "security": {
+            "properties": {
+              "status": {
+                "const": "PASS"
+              },
+              "findings_count": {
+                "const": 0
+              },
+              "requires_red_test": {
+                "const": false
+              }
+            }
+          },
+          "code_architecture": {
+            "properties": {
+              "status": {
+                "const": "PASS"
+              },
+              "findings_count": {
+                "const": 0
+              },
+              "requires_red_test": {
+                "const": false
+              }
+            }
+          },
+          "ux": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "PASS",
+                  "NA"
+                ]
+              },
+              "findings_count": {
+                "const": 0
+              },
+              "requires_red_test": {
+                "const": false
+              }
+            }
+          },
+          "ui": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "PASS",
+                  "NA"
+                ]
+              },
+              "findings_count": {
+                "const": 0
+              },
+              "requires_red_test": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "verdicts": {
+        "anyOf": [
+          {
+            "properties": {
+              "security": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "code_architecture": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "ux": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "ui": {
+                "properties": {
+                  "status": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sealed_verdict_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict_id",
+        "status",
+        "findings_count",
+        "requires_red_test",
+        "verdict_rel_path",
+        "verdict_sha256",
+        "model_id",
+        "model_family"
+      ],
+      "properties": {
+        "verdict_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NA"
+          ]
+        },
+        "findings_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requires_red_test": {
+          "type": "boolean"
+        },
+        "verdict_rel_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative to 4_Revisores/runtime/ (<task_id>/<bundle_id>/verdicts/<axis>.verdict.json)."
+        },
+        "verdict_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_family": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

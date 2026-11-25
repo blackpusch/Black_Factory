@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "note": "Plantilla declarativa para el harness externo de orquestacion (Opción 3C / NG1). Nunca leida para hacer llamadas HTTP desde Go.",
+  "builder_reference": {
+    "profile_role": "builder",
+    "conceptual_reference": "Opus",
+    "model_family": "anthropic-opus"
+  },
+  "reviewers": {
+    "security": {
+      "profile_role": "reviewer_security",
+      "skill_path": "4_Revisores/skills/reviewer-security/SKILL.md",
+      "conceptual_reference": "Sol (OpenAI / Codex)",
+      "model_family": "openai-sol",
+      "disallowed_model_families": [
+        "anthropic-opus"
+      ],
+      "clean_context_required": true,
+      "activation": "always"
+    },
+    "ux": {
+      "profile_role": "reviewer_ux",
+      "skill_path": "4_Revisores/skills/reviewer-ux/SKILL.md",
+      "conceptual_reference": "Sol (OpenAI / Codex)",
+      "model_family": "openai-sol",
+      "disallowed_model_families": [
+        "anthropic-opus"
+      ],
+      "clean_context_required": true,
+      "activation": "conditional_bundle_applicability"
+    },
+    "ui": {
+      "profile_role": "reviewer_ui",
+      "skill_path": "4_Revisores/skills/reviewer-ui/SKILL.md",
+      "conceptual_reference": "Astra (RL computer use)",
+      "model_family": "astra-cu",
+      "disallowed_model_families": [
+        "anthropic-opus"
+      ],
+      "clean_context_required": true,
+      "activation": "conditional_bundle_applicability"
+    },
+    "code_architecture": {
+      "profile_role": "reviewer_code",
+      "skill_path": "4_Revisores/skills/reviewer-code/SKILL.md",
+      "conceptual_reference": "Sonnet",
+      "model_family": "anthropic-sonnet",
+      "disallowed_model_families": [
+        "anthropic-opus"
+      ],
+      "clean_context_required": true,
+      "activation": "always"
+    }
+  }
+}
