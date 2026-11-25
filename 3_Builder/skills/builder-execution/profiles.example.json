@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "note": "Plantilla declarativa para arnes externo (nunca leida ni ejecutada por builder.exe)",
+  "roles": {
+    "builder": {
+      "team": "3_Builder",
+      "recommended_tier": "reasoning-high",
+      "clean_context": false,
+      "responsibilities": [
+        "Consultar builder context (Read-Before-Act)",
+        "Escribir prueba fallida y validar con builder tdd-red",
+        "Implementar codigo minimo, refactorizar y emitir bundle via builder package"
+      ]
+    },
+    "reviewer_security": {
+      "team": "4_Revisores",
+      "recommended_tier": "reasoning-high",
+      "clean_context": true,
+      "applicability": "always",
+      "focus": [
+        "Fugas G4 (secretos, tokens, llaves, rutas host)",
+        "Validacion de entradas, symlinks/reparse points, escapes shell y bypasses"
+      ]
+    },
+    "reviewer_code": {
+      "team": "4_Revisores",
+      "recommended_tier": "balanced-fast",
+      "clean_context": true,
+      "applicability": "always",
+      "focus": [
+        "Simplicidad, cero duplicacion, manejo de errores y cobertura TDD",
+        "Conformidad exacta con criterios de aceptacion y alcance del chunk"
+      ]
+    },
+    "reviewer_ux": {
+      "team": "4_Revisores",
+      "recommended_tier": "balanced",
+      "clean_context": true,
+      "applicability": "auto_or_cli_include",
+      "focus": [
+        "Ergonomia CLI, mensajes accionables, contratos JSON/Markdown y documentacion"
+      ]
+    },
+    "reviewer_ui": {
+      "team": "4_Revisores",
+      "recommended_tier": "multimodal-ui",
+      "clean_context": true,
+      "applicability": "auto_or_cli_include",
+      "focus": [
+        "Componentes GUI, accesibilidad, estilos, estados visuales y layout"
+      ]
+    },
+    "cycle_approver": {
+      "team": "5_Cycle_Approver",
+      "recommended_tier": "reasoning-high",
+      "clean_context": true,
+      "responsibilities": [
+        "Consolidar los cuatro dictamenes de 4_Revisores",
+        "Emitir BounceOrder v1.0 (APPROVE o BOUNCE) ligado a bundle_id y bundle_sha256",
+        "Determinar requires_red_test en ordenes BOUNCE"
+      ]
+    }
+  }
+}

@@ -65,6 +65,15 @@ Repositorio oficial: `https://github.com/blackpusch/Black_Factory`
   go vet ./...
   go test -count=1 -cover ./...
   ```
+- `3_Builder Engine`:
+  ```powershell
+  Set-Location "C:\Black Factory\3_Builder\engine"
+  $env:CGO_ENABLED = "0"
+  $env:GENGIS_CONTRACT_STRICT = "1"
+  $env:GENGIS_BIN = "C:\Black Factory\GengiSWAP\gengis.exe"
+  go vet ./...
+  go test -count=1 -cover ./...
+  ```
 - `GengiSWAP Engine`:
   ```powershell
   Set-Location "C:\Black Factory\GengiSWAP\engine"
@@ -78,7 +87,7 @@ Repositorio oficial: `https://github.com/blackpusch/Black_Factory`
 - `GengiSWAP/`: Protocolos v2 (`gengis_swap_common.md`, `gengis_swap_prep_protocol.md`, `gengis_swap_chef_protocol.md`), plantillas `v1` (`templates/`) y motor determinista en **Go 1.24** (`GengiSWAP/engine/`, módulo `gengiswap/ring`).
 - [`Docs/PROYECTO_TUNGSTENO.md`](Docs/PROYECTO_TUNGSTENO.md): Referencia técnica del motor `gengis`.
 - **Artefactos privados / locales (ignorados en `.gitignore`):**
-  - `0_Brain/vault/`, `0_Brain/brain.exe`, `1_Intake/runtime/`, `1_Intake/intake.exe`, `2_Spec_Writer/runtime/`, `2_Spec_Writer/specwriter.exe` y archivos `*.db` (`Opción i`).
+  - `0_Brain/vault/`, `0_Brain/brain.exe`, `1_Intake/runtime/`, `1_Intake/intake.exe`, `2_Spec_Writer/runtime/`, `2_Spec_Writer/specwriter.exe`, `3_Builder/runtime/`, `3_Builder/builder.exe` y archivos `*.db` (`Opción i`).
   - `GengiSWAP/gengis.exe` y `GengiSWAP/gengis_global_log.md`.
   - `C:\Desarrollo\GengiSWAP_data\` para tareas activas/archivadas (`gengis_task\`) y respaldos.
 
@@ -123,4 +132,19 @@ go build -o ..\specwriter.exe .\cmd\specwriter
 & "C:\Black Factory\2_Spec_Writer\specwriter.exe" verify --factory-root "C:\Black Factory" --repo-root "C:\Black Factory" --vault "C:\Black Factory\0_Brain\vault" --data-dir "C:\Black Factory\2_Spec_Writer\runtime" --json
 git -C "C:\Black Factory" check-ignore -v 2_Spec_Writer/runtime/
 git -C "C:\Black Factory" check-ignore -v 2_Spec_Writer/specwriter.exe
+```
+
+### Verificación y Compilación de `3_Builder` (`builder.exe`)
+
+```powershell
+Set-Location "C:\Black Factory\3_Builder\engine"
+$env:CGO_ENABLED = "0"
+$env:GENGIS_CONTRACT_STRICT = "1"
+$env:GENGIS_BIN = "C:\Black Factory\GengiSWAP\gengis.exe"
+go vet ./...
+go test -count=1 -cover ./...
+go build -o ..\builder.exe .\cmd\builder
+& "C:\Black Factory\3_Builder\builder.exe" verify --factory-root "C:\Black Factory" --repo-root "C:\Black Factory" --vault "C:\Black Factory\0_Brain\vault" --data-dir "C:\Black Factory\3_Builder\runtime" --json
+git -C "C:\Black Factory" check-ignore -v 3_Builder/runtime/
+git -C "C:\Black Factory" check-ignore -v 3_Builder/builder.exe
 ```
