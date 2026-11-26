@@ -1,0 +1,8 @@
+go 1.26.0
+
+use (
+	./0_Brain/engine
+	./1_Intake/engine
+	./2_Spec_Writer/engine
+	./pkg/bfcore
+)

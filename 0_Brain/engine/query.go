@@ -2,11 +2,14 @@ package brain
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"unicode"
+
+	"blackfactory/pkg/bfcore"
 )
 
 // QueryOptions parametriza una busqueda FTS5/BM25 o filtrada por metadatos sobre brain.db.
@@ -18,22 +21,45 @@ type QueryOptions struct {
 	Limit   int    `json:"limit,omitempty"`
 }
 
+// RiskZoneEntry representa una fila parseada de la tabla "## Catálogo de Zonas de Riesgo" en wiki/risk_zones.md.
+type RiskZoneEntry struct {
+	ID            string   `json:"id"`
+	Project       string   `json:"project"`
+	CoversPaths   []string `json:"covers_paths"`
+	Level         string   `json:"level"`
+	MandatoryGate string   `json:"mandatory_gate"`
+	EvidenceG5    string   `json:"evidence_g5,omitempty"`
+}
+
+// RiskZoneHit representa una coincidencia estructurada de una zona de riesgo contra los archivos consultados.
+type RiskZoneHit struct {
+	ID            string   `json:"id"`
+	Project       string   `json:"project"`
+	Level         string   `json:"level"`
+	MatchedPaths  []string `json:"matched_paths"`
+	MandatoryGate string   `json:"mandatory_gate"`
+}
+
 // SearchResult representa un documento devuelto por Search o ContextForFiles.
 type SearchResult struct {
-	ID           string   `json:"id"`
-	RelPath      string   `json:"rel_path"`
-	Title        string   `json:"title"`
-	Type         string   `json:"type"`
-	Project      string   `json:"project"`
-	Status       string   `json:"status"`
-	Tags         []string `json:"tags,omitempty"`
-	CoversPaths  []string `json:"covers_paths,omitempty"`
-	VerifiedHead string   `json:"verified_head,omitempty"`
-	UpdatedAt    string   `json:"updated_at,omitempty"`
-	Score        float64  `json:"score"`
-	Snippet      string   `json:"snippet,omitempty"`
-	MatchedPaths []string `json:"matched_paths,omitempty"`
-	Transversal  bool     `json:"transversal,omitempty"`
+	ID                  string        `json:"id"`
+	RelPath             string        `json:"rel_path"`
+	Title               string        `json:"title"`
+	Type                string        `json:"type"`
+	Project             string        `json:"project"`
+	Status              string        `json:"status"`
+	Tags                []string      `json:"tags,omitempty"`
+	CoversPaths         []string      `json:"covers_paths,omitempty"`
+	VerifiedHead        string        `json:"verified_head,omitempty"`
+	UpdatedAt           string        `json:"updated_at,omitempty"`
+	Score               float64       `json:"score"`
+	Snippet             string        `json:"snippet,omitempty"`
+	MatchedPaths        []string      `json:"matched_paths,omitempty"`
+	Transversal         bool          `json:"transversal,omitempty"`
+	RiskHits            []RiskZoneHit `json:"risk_hits,omitempty"`
+	RiskZonesSHA256     string        `json:"risk_zones_sha256,omitempty"`
+	RiskZonesParseError string        `json:"risk_zones_parse_error,omitempty"`
+	rawBody             string
 }
 
 // Search consulta el indice SQLite FTS5 aplicando ranking BM25 y filtros opcionales.
@@ -50,7 +76,7 @@ func Search(dbPath string, opts QueryOptions) ([]SearchResult, error) {
 	}
 
 	rawQuery := strings.TrimSpace(opts.Query)
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	if rawQuery == "" {
 		results, err = searchByMetadata(db, opts, limit)
 	} else {
@@ -69,6 +95,9 @@ func Search(dbPath string, opts QueryOptions) ([]SearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if results == nil {
+		results = make([]SearchResult, 0)
+	}
 
 	if err := hydrateResultRelations(db, results); err != nil {
 		return nil, err
@@ -76,8 +105,8 @@ func Search(dbPath string, opts QueryOptions) ([]SearchResult, error) {
 	return results, nil
 }
 
-// ContextForFiles cruza archivos modificados contra covers_paths e incluye
-// automaticamente documentos transversales (constitution y risk_zones).
+// ContextForFiles cruza archivos modificados contra covers_paths (insensible a mayusculas via bfcore.MatchCoverPathFold),
+// incluye automaticamente documentos transversales (constitution y risk_zones), y evalua las zonas de riesgo de wiki/risk_zones.md.
 func ContextForFiles(dbPath string, project string, files []string) ([]SearchResult, error) {
 	db, err := openReadOnlyDB(dbPath)
 	if err != nil {
@@ -91,7 +120,7 @@ func ContextForFiles(dbPath string, project string, files []string) ([]SearchRes
 		return nil, err
 	}
 
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for _, item := range allDocs {
 		isTransversal := isTransversalType(item.Type)
 		if isTransversal {
@@ -100,6 +129,20 @@ func ContextForFiles(dbPath string, project string, files []string) ([]SearchRes
 			}
 			item.Transversal = true
 			item.MatchedPaths = matchFilesAgainstCovers(item.CoversPaths, normFiles)
+			if strings.EqualFold(item.Type, "risk_zones") {
+				item.RiskZonesSHA256 = sha256Hex(normalizeMarkdownContent(item.rawBody))
+				entries, parseErr := ParseRiskZonesCatalog(item.rawBody)
+				if parseErr != nil {
+					item.RiskZonesParseError = parseErr.Error()
+				} else {
+					hits, hitPaths := evaluateRiskZoneEntries(entries, project, normFiles)
+					item.RiskHits = hits
+					if len(hitPaths) > 0 {
+						item.MatchedPaths = mergeSortedUniqueStrings(item.MatchedPaths, hitPaths)
+					}
+				}
+			}
+			item.rawBody = ""
 			results = append(results, item)
 			continue
 		}
@@ -112,6 +155,7 @@ func ContextForFiles(dbPath string, project string, files []string) ([]SearchRes
 			continue
 		}
 		item.MatchedPaths = matched
+		item.rawBody = ""
 		results = append(results, item)
 	}
 
@@ -133,6 +177,224 @@ func ContextForFiles(dbPath string, project string, files []string) ([]SearchRes
 	})
 
 	return results, nil
+}
+
+// ParseRiskZonesCatalog parsea la tabla de 6 columnas bajo "## Catálogo de Zonas de Riesgo"
+// en wiki/risk_zones.md, tolerando backticks en los encabezados y en cada celda,
+// separando multiples patrones por ',' y ';', normalizando CRÍTICO -> CRITICO,
+// y retornando error explicito si una fila dentro de la tabla esta truncada o malformada.
+func ParseRiskZonesCatalog(markdown string) ([]RiskZoneEntry, error) {
+	lines := strings.Split(normalizeMarkdownContent(markdown), "\n")
+	inSection := false
+	headerFound := false
+	var entries []RiskZoneEntry
+
+	for _, rawLine := range lines {
+		trimmed := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(trimmed, "## ") {
+			if inSection && headerFound {
+				break
+			}
+			headingLower := strings.ToLower(trimmed)
+			if strings.Contains(headingLower, "zonas de riesgo") ||
+				strings.Contains(headingLower, "catalogo de zonas") ||
+				strings.Contains(headingLower, "catálogo de zonas") {
+				inSection = true
+				continue
+			}
+			inSection = false
+			continue
+		}
+
+		if !inSection {
+			continue
+		}
+
+		if !strings.HasPrefix(trimmed, "|") {
+			if headerFound && len(entries) > 0 && trimmed != "" {
+				break
+			}
+			continue
+		}
+
+		if !strings.HasSuffix(trimmed, "|") {
+			if headerFound {
+				return nil, fmt.Errorf("fila de tabla de zonas de riesgo truncada (sin '|' final): %q", trimmed)
+			}
+			continue
+		}
+
+		cells := splitMarkdownTableRow(trimmed)
+		if len(cells) < 5 {
+			if headerFound {
+				return nil, fmt.Errorf("fila de tabla de zonas de riesgo con %d columnas (minimo 5): %q", len(cells), trimmed)
+			}
+			continue
+		}
+
+		if isMarkdownSeparatorRow(cells) {
+			continue
+		}
+
+		c0 := strings.ToLower(stripCellBackticks(cells[0]))
+		c1 := strings.ToLower(stripCellBackticks(cells[1]))
+		if !headerFound {
+			if c0 == "id" && strings.Contains(c1, "proyecto") {
+				headerFound = true
+			}
+			continue
+		}
+
+		id := stripCellBackticks(cells[0])
+		proj := stripCellBackticks(cells[1])
+		rawPaths := cells[2]
+		rawLevel := stripCellBackticks(cells[3])
+		gate := strings.TrimSpace(cells[4])
+		evidence := ""
+		if len(cells) >= 6 {
+			evidence = stripCellBackticks(cells[5])
+		}
+
+		if id == "" || proj == "" {
+			return nil, fmt.Errorf("fila de zona de riesgo con ID o Proyecto vacio: %q", trimmed)
+		}
+
+		normLevel, err := normalizeRiskLevel(rawLevel)
+		if err != nil {
+			return nil, fmt.Errorf("fila %s: %w", id, err)
+		}
+
+		covers := parseRiskCoversCell(rawPaths)
+		if len(covers) == 0 {
+			return nil, fmt.Errorf("fila %s carece de rutas cubiertas (covers_paths)", id)
+		}
+
+		entries = append(entries, RiskZoneEntry{
+			ID:            id,
+			Project:       proj,
+			CoversPaths:   covers,
+			Level:         normLevel,
+			MandatoryGate: gate,
+			EvidenceG5:    evidence,
+		})
+	}
+
+	if !headerFound || len(entries) == 0 {
+		return nil, errors.New("tabla '## Catálogo de Zonas de Riesgo' ausente o sin entradas validas en risk_zones.md")
+	}
+	return entries, nil
+}
+
+func splitMarkdownTableRow(trimmed string) []string {
+	inner := strings.TrimSuffix(strings.TrimPrefix(trimmed, "|"), "|")
+	parts := strings.Split(inner, "|")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = strings.TrimSpace(p)
+	}
+	return out
+}
+
+func isMarkdownSeparatorRow(cells []string) bool {
+	for _, c := range cells {
+		clean := strings.Trim(c, " :-")
+		if clean != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func stripCellBackticks(s string) string {
+	t := strings.TrimSpace(s)
+	t = strings.Trim(t, "`")
+	return strings.TrimSpace(t)
+}
+
+func parseRiskCoversCell(raw string) []string {
+	replaced := strings.ReplaceAll(raw, ";", ",")
+	parts := strings.Split(replaced, ",")
+	var covers []string
+	seen := make(map[string]bool)
+	for _, p := range parts {
+		c := stripCellBackticks(p)
+		norm := bfcore.NormalizeCoverPath(c)
+		if norm == "" {
+			continue
+		}
+		key := strings.ToLower(norm)
+		if !seen[key] {
+			seen[key] = true
+			covers = append(covers, c)
+		}
+	}
+	return covers
+}
+
+func normalizeRiskLevel(raw string) (string, error) {
+	up := strings.ToUpper(strings.TrimSpace(raw))
+	up = strings.ReplaceAll(up, "Í", "I")
+	switch up {
+	case "CRITICO", "ALTO", "MEDIO", "BAJO":
+		return up, nil
+	default:
+		return "", fmt.Errorf("nivel de riesgo desconocido %q (permitidos: CRITICO, ALTO, MEDIO, BAJO)", raw)
+	}
+}
+
+func evaluateRiskZoneEntries(entries []RiskZoneEntry, targetProject string, normFiles []string) ([]RiskZoneHit, []string) {
+	if len(entries) == 0 || len(normFiles) == 0 {
+		return nil, nil
+	}
+	tp := strings.TrimSpace(targetProject)
+	var hits []RiskZoneHit
+	allMatchedSet := make(map[string]bool)
+	var allMatched []string
+
+	for _, entry := range entries {
+		ep := strings.TrimSpace(entry.Project)
+		if tp != "" && ep != "" && ep != "*" && !strings.EqualFold(ep, "black-factory") && !strings.EqualFold(ep, tp) {
+			continue
+		}
+		matched := matchFilesAgainstCovers(entry.CoversPaths, normFiles)
+		if len(matched) == 0 {
+			continue
+		}
+		hits = append(hits, RiskZoneHit{
+			ID:            entry.ID,
+			Project:       entry.Project,
+			Level:         entry.Level,
+			MatchedPaths:  matched,
+			MandatoryGate: entry.MandatoryGate,
+		})
+		for _, m := range matched {
+			if !allMatchedSet[m] {
+				allMatchedSet[m] = true
+				allMatched = append(allMatched, m)
+			}
+		}
+	}
+	sort.Strings(allMatched)
+	return hits, allMatched
+}
+
+func mergeSortedUniqueStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func openReadOnlyDB(dbPath string) (*sql.DB, error) {
@@ -198,7 +460,7 @@ func searchWithFTS5(db *sql.DB, ftsExpr string, opts QueryOptions, limit int) ([
 	}
 	defer rows.Close()
 
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for rows.Next() {
 		var r SearchResult
 		var snip, body string
@@ -239,7 +501,7 @@ func searchByMetadata(db *sql.DB, opts QueryOptions, limit int) ([]SearchResult,
 	}
 	defer rows.Close()
 
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for rows.Next() {
 		var r SearchResult
 		var body string
@@ -265,7 +527,7 @@ func loadIndexedDocs(db *sql.DB) ([]SearchResult, error) {
 	}
 	defer rows.Close()
 
-	var docs []SearchResult
+	docs := make([]SearchResult, 0)
 	for rows.Next() {
 		var r SearchResult
 		var body string
@@ -275,6 +537,7 @@ func loadIndexedDocs(db *sql.DB) ([]SearchResult, error) {
 		); err != nil {
 			return nil, err
 		}
+		r.rawBody = body
 		r.Snippet = cleanSnippet("", body, r.Title)
 		docs = append(docs, r)
 	}
@@ -357,7 +620,7 @@ func matchFilesAgainstCovers(covers, normFiles []string) []string {
 	var matched []string
 	for _, f := range normFiles {
 		for _, pat := range covers {
-			if MatchCoverPath(pat, f) {
+			if bfcore.MatchCoverPathFold(pat, f) {
 				if !seen[f] {
 					seen[f] = true
 					matched = append(matched, f)
@@ -370,8 +633,12 @@ func matchFilesAgainstCovers(covers, normFiles []string) []string {
 	return matched
 }
 
-func isTransversalType(docType string) bool {
+func IsTransversalType(docType string) bool {
 	return strings.EqualFold(docType, "constitution") || strings.EqualFold(docType, "risk_zones")
+}
+
+func isTransversalType(docType string) bool {
+	return IsTransversalType(docType)
 }
 
 func transversalAppliesToProject(docProject, targetProject string) bool {
@@ -399,8 +666,9 @@ func cleanSnippet(snip, body, title string) string {
 	if compact == "" {
 		return title
 	}
-	if len(compact) > 160 {
-		return compact[:157] + "..."
+	runes := []rune(compact)
+	if len(runes) > 160 {
+		return string(runes[:157]) + "..."
 	}
 	return compact
 }
@@ -421,20 +689,28 @@ func buildFTS5Query(raw string, quoteAll bool) string {
 			continue
 		}
 
-		if !quoteAll && isFTSBooleanOp(tok) && idx > 0 && idx < len(tokens)-1 && !isFTSBooleanOp(tokens[idx-1]) {
+		if quoteAll {
+			escaped := strings.ReplaceAll(tok, `"`, `""`)
+			if escaped != "" {
+				parts = append(parts, `"`+escaped+`"`)
+			}
+			continue
+		}
+
+		if isFTSBooleanOp(tok) && idx > 0 && idx < len(tokens)-1 && !isFTSBooleanOp(tokens[idx-1]) {
 			parts = append(parts, tok)
 			continue
 		}
 
-		if !quoteAll && strings.HasSuffix(tok, "*") && len(tok) > 1 {
+		if strings.HasSuffix(tok, "*") && len(tok) > 1 {
 			prefix := tok[:len(tok)-1]
-			if isSimpleFTSToken(prefix) {
+			if isSimpleFTSToken(prefix) && !isFTSReservedKeyword(prefix) {
 				parts = append(parts, prefix+"*")
 				continue
 			}
 		}
 
-		if isSimpleFTSToken(tok) {
+		if isSimpleFTSToken(tok) && !isFTSReservedKeyword(tok) {
 			parts = append(parts, tok)
 			continue
 		}
@@ -488,6 +764,10 @@ func splitQueryTokens(raw string) []string {
 
 func isFTSBooleanOp(tok string) bool {
 	return tok == "AND" || tok == "OR" || tok == "NOT"
+}
+
+func isFTSReservedKeyword(tok string) bool {
+	return isFTSBooleanOp(tok) || tok == "NEAR"
 }
 
 func isSimpleFTSToken(tok string) bool {

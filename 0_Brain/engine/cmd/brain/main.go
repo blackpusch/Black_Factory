@@ -24,10 +24,15 @@ type BrainService interface {
 	CheckDrift(vaultRoot string, projectRepos map[string]string) ([]brain.DriftItem, error)
 	ProposeUpdate(vaultRoot string, req brain.ProposeRequest) (brain.ProposeResult, error)
 	ApplyUpdate(vaultRoot string, opts brain.ApplyOptions) (brain.ApplyResult, error)
+	SignProposal(vaultRoot, propPath, privKeyPath string) (string, error)
 }
 
 // LocalService implementa BrainService sobre la boveda y motor SQLite locales.
 type LocalService struct{}
+
+func (LocalService) SignProposal(vaultRoot, propPath, privKeyPath string) (string, error) {
+	return brain.SignProposal(vaultRoot, propPath, privKeyPath, nil)
+}
 
 func (LocalService) InitVault(vaultRoot, schemasDir string) error {
 	return brain.InitVault(vaultRoot, schemasDir)
@@ -112,6 +117,8 @@ func run(args []string, out, errOut io.Writer, svc BrainService) int {
 		return cmdPropose(rest, out, errOut, svc)
 	case "apply":
 		return cmdApply(rest, out, errOut, svc)
+	case "sign":
+		return cmdSign(rest, out, errOut, svc)
 	case "mcp":
 		fmt.Fprintln(errOut, "error: subcomando 'mcp' reservado para Fase 2 sobre BrainService")
 		return 2
@@ -302,6 +309,19 @@ func cmdVerify(args []string, out, errOut io.Writer, svc BrainService) int {
 	}
 	vaultRoot = resolveVaultPath(vaultRoot)
 
+	// Adquirir lock del SO y recuperar journal previo si existe (J2)
+	lock, lockErr := brain.AcquireVaultLock(vaultRoot)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "error: %v\n", lockErr)
+		return 4
+	}
+	defer lock.Unlock()
+
+	if recErr := brain.RecoverJournal(vaultRoot); recErr != nil {
+		fmt.Fprintf(errOut, "error recuperando journal: %v\n", recErr)
+		return 3
+	}
+
 	projectRepos, err := parseRepoMappings(repoFlags)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: %v\n", err)
@@ -423,15 +443,16 @@ func cmdPropose(args []string, out, errOut io.Writer, svc BrainService) int {
 func cmdApply(args []string, out, errOut io.Writer, svc BrainService) int {
 	fs := flag.NewFlagSet("brain apply", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	var vaultRoot, proposalPath string
+	var vaultRoot, proposalPath, autorSig string
 	var approveAutor, asJSON bool
 	fs.StringVar(&vaultRoot, "vault", "", "Ruta de la boveda local")
 	fs.StringVar(&proposalPath, "proposal", "", "Ruta del archivo BrainPatch")
-	fs.BoolVar(&approveAutor, "approve-autor", false, "Aprobacion explicita del [AUTOR]")
+	fs.StringVar(&autorSig, "autor-sig", "", "Firma Ed25519 en Base64 emitida por el [AUTOR]")
+	fs.BoolVar(&approveAutor, "approve-autor", false, "Aprobacion explicita del [AUTOR] (deprecado)")
 	fs.BoolVar(&asJSON, "json", false, "Salida JSON")
 
 	reordered := reorderFlags(args, map[string]bool{"approve-autor": true, "json": true}, map[string]bool{
-		"vault": true, "proposal": true,
+		"vault": true, "proposal": true, "autor-sig": true,
 	})
 	if err := fs.Parse(reordered); err != nil {
 		return 1
@@ -443,12 +464,19 @@ func cmdApply(args []string, out, errOut io.Writer, svc BrainService) int {
 
 	res, err := svc.ApplyUpdate(vaultRoot, brain.ApplyOptions{
 		ProposalPath: proposalPath,
+		AutorSig:     autorSig,
 		ApproveAutor: approveAutor,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "error: %v\n", err)
 		if errors.Is(err, brain.ErrAutorApprovalRequired) {
 			return 2
+		}
+		if errors.Is(err, brain.ErrJournalCorrupt) || errors.Is(err, brain.ErrCommitDegraded) {
+			return 3
+		}
+		if errors.Is(err, brain.ErrVaultLocked) {
+			return 4
 		}
 		return 1
 	}
@@ -461,6 +489,54 @@ func cmdApply(args []string, out, errOut io.Writer, svc BrainService) int {
 	return 0
 }
 
+func cmdSign(args []string, out, errOut io.Writer, svc BrainService) int {
+	fs := flag.NewFlagSet("brain sign", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	var vaultRoot, proposalPath, keyPath string
+	var asJSON bool
+	fs.StringVar(&vaultRoot, "vault", "", "Ruta de la boveda local")
+	fs.StringVar(&proposalPath, "proposal", "", "Ruta del archivo BrainPatch a firmar")
+	fs.StringVar(&keyPath, "key", "", "Ruta del archivo con la clave privada Ed25519")
+	fs.BoolVar(&asJSON, "json", false, "Salida JSON")
+
+	reordered := reorderFlags(args, map[string]bool{"json": true}, map[string]bool{
+		"vault": true, "proposal": true, "key": true,
+	})
+	if err := fs.Parse(reordered); err != nil {
+		return 1
+	}
+	if proposalPath == "" && fs.NArg() > 0 {
+		proposalPath = fs.Arg(0)
+	}
+	vaultRoot = resolveVaultPath(vaultRoot)
+
+	if strings.TrimSpace(proposalPath) == "" {
+		fmt.Fprintln(errOut, "error: se requiere especificar --proposal")
+		return 1
+	}
+	if strings.TrimSpace(keyPath) == "" {
+		fmt.Fprintln(errOut, "error: se requiere especificar --key con la clave privada")
+		return 1
+	}
+
+	sigB64, err := svc.SignProposal(vaultRoot, proposalPath, keyPath)
+	if err != nil {
+		fmt.Fprintf(errOut, "error firmando propuesta: %v\n", err)
+		return 1
+	}
+
+	if asJSON {
+		writeJSON(out, map[string]string{
+			"proposal":  proposalPath,
+			"autor_sig": sigB64,
+		})
+	} else {
+		fmt.Fprintf(out, "Firma Ed25519 generada con exito:\n\n%s\n\nPara aplicar ejecute:\n  brain apply --vault %q --proposal %q --autor-sig %s\n",
+			sigB64, vaultRoot, proposalPath, sigB64)
+	}
+	return 0
+}
+
 func resolveVaultPath(vaultFlag string) string {
 	if strings.TrimSpace(vaultFlag) != "" {
 		return vaultFlag
@@ -468,7 +544,20 @@ func resolveVaultPath(vaultFlag string) string {
 	if env := strings.TrimSpace(os.Getenv("BRAIN_VAULT")); env != "" {
 		return env
 	}
-	return filepath.Join("0_Brain", "vault")
+	defaultRel := filepath.Join("0_Brain", "vault")
+	if fi, err := os.Stat(defaultRel); err == nil && fi.IsDir() {
+		return defaultRel
+	}
+	if fi, err := os.Stat("vault"); err == nil && fi.IsDir() {
+		return "vault"
+	}
+	if exe, err := os.Executable(); err == nil {
+		cand := filepath.Join(filepath.Dir(exe), "vault")
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			return cand
+		}
+	}
+	return defaultRel
 }
 
 func resolveDBPath(vaultRoot, dbFlag string) string {
@@ -602,5 +691,6 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  context     Obtiene contexto por covers_paths y documentos transversales")
 	fmt.Fprintln(w, "  verify      Valida OKF, enlaces internos, reglas G4 y drift Git opcional (--repo)")
 	fmt.Fprintln(w, "  propose     Crea un BrainPatch en _proposals/ sin mutar la boveda")
-	fmt.Fprintln(w, "  apply       Valida y aplica un BrainPatch (exige --approve-autor en documentos criticos)")
+	fmt.Fprintln(w, "  apply       Valida y aplica un BrainPatch de forma atomica (--autor-sig para documentos gobernados)")
+	fmt.Fprintln(w, "  sign        Firma una propuesta con clave privada Ed25519 del [AUTOR]")
 }

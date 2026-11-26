@@ -1,0 +1,26 @@
+# Chunk {{.Number}}: {{.Title}}
+
+## Objetivo
+{{.Objective}}
+
+## Entradas
+{{if .Inputs}}{{range .Inputs}}- {{.}}
+{{end}}{{else}}- Contexto congelado de `spec_context.json` y especificación canónica aprobada.
+{{end}}
+## Puede modificar
+{{range .CanModify}}- `{{.}}`
+{{end}}
+## Fuera de Alcance
+{{if .Forbidden}}{{range .Forbidden}}- `{{.}}`
+{{end}}{{else}}- ninguna
+{{end}}
+## Criterios de Aceptación
+{{range .AcceptanceCriteria}}- {{.}}
+{{end}}
+## Comando de Verificación
+```cmd
+{{range .VerifyCommands}}{{.}}
+{{end}}```
+
+## Prueba de que puede fallar
+{{.FailureProof}}

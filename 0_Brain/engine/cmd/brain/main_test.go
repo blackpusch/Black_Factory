@@ -382,3 +382,39 @@ func TestCLI_ApplyRejectsRiskZonesWithoutAutorAndG4Violations(t *testing.T) {
 		t.Fatalf("wiki/incompleto.md no debia crearse tras rechazo de esquema")
 	}
 }
+
+func TestResolveVaultPath_PriorityAndFallback(t *testing.T) {
+	t.Setenv("BRAIN_VAULT", "")
+	if got := resolveVaultPath("custom/vault"); got != "custom/vault" {
+		t.Fatalf("resolveVaultPath con flag explicito = %q, esperaba custom/vault", got)
+	}
+	t.Setenv("BRAIN_VAULT", "env/vault")
+	if got := resolveVaultPath(""); got != "env/vault" {
+		t.Fatalf("resolveVaultPath con BRAIN_VAULT = %q, esperaba env/vault", got)
+	}
+	t.Setenv("BRAIN_VAULT", "")
+	def := resolveVaultPath("")
+	if def == "" || !strings.HasSuffix(filepath.ToSlash(def), "vault") {
+		t.Fatalf("resolveVaultPath default inesperado: %q", def)
+	}
+
+	// Nit QA #5: fallback a "vault" en CWD cuando ./vault existe en el directorio actual
+	origWD, err := os.Getwd()
+	if err == nil {
+		baseTmp := t.TempDir()
+		workDir := filepath.Join(baseTmp, "work")
+		if err := os.MkdirAll(filepath.Join(workDir, "vault"), 0o755); err == nil {
+			if err := os.Chdir(workDir); err == nil {
+				gotCWD := resolveVaultPath("")
+				// En Windows hay que salir de workDir hacia baseTmp o origWD antes de que t.TempDir() limpie baseTmp
+				if chErr := os.Chdir(origWD); chErr != nil {
+					_ = os.Chdir(os.TempDir())
+				}
+				if gotCWD != "vault" {
+					t.Fatalf("resolveVaultPath en CWD con ./vault = %q, esperaba \"vault\"", gotCWD)
+				}
+			}
+		}
+	}
+}
+
